@@ -12,7 +12,7 @@ from sklearn.metrics import classification_report, confusion_matrix, f1_score, r
 from xgboost import XGBClassifier
 
 from xauusd_signal.domain import Candle
-from xauusd_signal.feature_engine import FEATURE_COLUMNS, build_feature_frame
+from xauusd_signal.feature_engine import FEATURE_COLUMNS, add_price_features
 
 
 def frame_to_candles(frame: pd.DataFrame, granularity: str, instrument: str) -> list[Candle]:
@@ -48,19 +48,74 @@ def make_training_frame(
     h1_frame = load_csv(h1_path)
     h4_frame = load_csv(h4_path)
     dxy_frame = load_csv(dxy_path)
-    df = build_feature_frame(
-        frame_to_candles(m15_frame, "M15", "XAU/USD"),
-        frame_to_candles(h1_frame, "H1", "XAU/USD"),
-        frame_to_candles(h4_frame, "H4", "XAU/USD"),
-        frame_to_candles(dxy_frame, "M15", "EUR/USD"),
-        sentiment_score=sentiment_score,
-    )
+    df = build_training_features(m15_frame, h1_frame, h4_frame, dxy_frame, sentiment_score)
     future_close = df["close"].shift(-4)
     threshold = 0.5 * df["atr_14"]
     df["target"] = pd.NA
     df.loc[future_close > df["close"] + threshold, "target"] = 1
     df.loc[future_close < df["close"] - threshold, "target"] = 0
     return df.dropna(subset=FEATURE_COLUMNS + ["target"]).copy()
+
+
+def build_training_features(
+    m15_frame: pd.DataFrame,
+    h1_frame: pd.DataFrame,
+    h4_frame: pd.DataFrame,
+    dxy_frame: pd.DataFrame,
+    sentiment_score: float,
+) -> pd.DataFrame:
+    df = add_price_features(m15_frame.copy()).sort_values("timestamp")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+
+    h1_context = higher_timeframe_context(h1_frame, "h1")
+    h4_context = higher_timeframe_context(h4_frame, "h4")
+    dxy_context = dxy_proxy_context(dxy_frame)
+
+    df = pd.merge_asof(df, h1_context, on="timestamp", direction="backward")
+    df = pd.merge_asof(df, h4_context, on="timestamp", direction="backward")
+    df = pd.merge_asof(df, dxy_context, on="timestamp", direction="backward")
+
+    hours = pd.to_datetime(df["timestamp"], utc=True).dt.hour
+    df["session_london"] = hours.between(7, 16, inclusive="left").astype(int)
+    df["session_newyork"] = hours.between(13, 21, inclusive="left").astype(int)
+    df["session_overlap"] = hours.between(13, 16, inclusive="left").astype(int)
+    df["session_asian"] = hours.between(0, 7, inclusive="left").astype(int)
+    df["day_of_week"] = pd.to_datetime(df["timestamp"], utc=True).dt.dayofweek
+    df["sentiment_score"] = float(sentiment_score)
+    return df
+
+
+def higher_timeframe_context(frame: pd.DataFrame, prefix: str) -> pd.DataFrame:
+    enriched = add_price_features(frame.copy()).sort_values("timestamp")
+    enriched["timestamp"] = pd.to_datetime(enriched["timestamp"], utc=True)
+    spread = enriched["ema_20"] - enriched["ema_50"]
+    slope = spread - spread.shift(4)
+    trend = np.select(
+        [(spread > 0) & (slope > 0), (spread < 0) & (slope < 0)],
+        [1, -1],
+        default=0,
+    )
+    atr_values = enriched["atr_14"].replace(0, np.nan)
+    strength = (spread.abs() / atr_values).clip(upper=1.0).fillna(0)
+    columns = {
+        "timestamp": enriched["timestamp"],
+        f"{prefix}_trend": trend,
+    }
+    if prefix == "h4":
+        columns["h4_trend_strength"] = strength
+    return pd.DataFrame(columns).dropna().sort_values("timestamp")
+
+
+def dxy_proxy_context(frame: pd.DataFrame) -> pd.DataFrame:
+    enriched = add_price_features(frame.copy()).sort_values("timestamp")
+    enriched["timestamp"] = pd.to_datetime(enriched["timestamp"], utc=True)
+    return pd.DataFrame(
+        {
+            "timestamp": enriched["timestamp"],
+            "dxy_rsi_14": enriched["rsi_14"],
+            "dxy_above_ema_20": (enriched["close"] > enriched["ema_20"]).astype(int),
+        }
+    ).dropna().sort_values("timestamp")
 
 
 def chronological_split(df: pd.DataFrame):
