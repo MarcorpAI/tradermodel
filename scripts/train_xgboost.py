@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 import joblib
+import numpy as np
 import optuna
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
@@ -73,6 +74,9 @@ def objective(train: pd.DataFrame, validation: pd.DataFrame):
     y_train = train["target"].astype(int)
     x_val = validation[FEATURE_COLUMNS]
     y_val = validation["target"].astype(int)
+    negative = int((y_train == 0).sum())
+    positive = int((y_train == 1).sum())
+    scale_pos_weight = negative / positive if positive else 1.0
 
     def _objective(trial: optuna.Trial) -> float:
         model = XGBClassifier(
@@ -84,14 +88,37 @@ def objective(train: pd.DataFrame, validation: pd.DataFrame):
             min_child_weight=trial.suggest_categorical("min_child_weight", [1, 3, 5]),
             reg_alpha=trial.suggest_categorical("reg_alpha", [0, 0.1, 0.5]),
             reg_lambda=trial.suggest_categorical("reg_lambda", [1, 1.5, 2.0]),
+            scale_pos_weight=scale_pos_weight,
             eval_metric="logloss",
             random_state=42,
         )
         model.fit(x_train, y_train)
         predictions = model.predict(x_val)
-        return f1_score(y_val, predictions)
+        return f1_score(y_val, predictions, average="macro", zero_division=0)
 
     return _objective
+
+
+def print_dataset_summary(train_df: pd.DataFrame, validation_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
+    for name, frame in [("train", train_df), ("validation", validation_df), ("test", test_df)]:
+        counts = frame["target"].astype(int).value_counts().sort_index().to_dict()
+        print(f"{name}_rows={len(frame)} target_counts={counts}")
+
+
+def evaluate_model(name: str, model, x_test: pd.DataFrame, y_test: pd.Series) -> float:
+    predictions = model.predict(x_test)
+    probabilities = model.predict_proba(x_test)[:, 1]
+    print(f"\n=== {name} ===")
+    print(classification_report(y_test, predictions, zero_division=0))
+    print(confusion_matrix(y_test, predictions))
+    try:
+        print(f"ROC-AUC: {roc_auc_score(y_test, probabilities):.4f}")
+    except ValueError:
+        print("ROC-AUC: unavailable")
+    macro_f1 = f1_score(y_test, predictions, average="macro", zero_division=0)
+    print(f"Macro-F1: {macro_f1:.4f}")
+    print(f"predicted_counts={dict(zip(*np.unique(predictions, return_counts=True)))}")
+    return macro_f1
 
 
 def train(csv_path: Path, output_path: Path, trials: int) -> None:
@@ -101,24 +128,36 @@ def train(csv_path: Path, output_path: Path, trials: int) -> None:
 def train_from_bundle(m15: Path, h1: Path, h4: Path, dxy: Path, output_path: Path, trials: int) -> None:
     prepared = make_training_frame(m15, h1, h4, dxy)
     train_df, validation_df, test_df = chronological_split(prepared)
+    print_dataset_summary(train_df, validation_df, test_df)
     study = optuna.create_study(direction="maximize")
     study.optimize(objective(train_df, validation_df), n_trials=trials)
 
-    base_model = XGBClassifier(**study.best_params, eval_metric="logloss", random_state=42)
+    y_train = train_df["target"].astype(int)
+    negative = int((y_train == 0).sum())
+    positive = int((y_train == 1).sum())
+    scale_pos_weight = negative / positive if positive else 1.0
+    base_model = XGBClassifier(
+        **study.best_params,
+        scale_pos_weight=scale_pos_weight,
+        eval_metric="logloss",
+        random_state=42,
+    )
     base_model.fit(train_df[FEATURE_COLUMNS], train_df["target"].astype(int))
-    calibrated = CalibratedClassifierCV(base_model, method="isotonic", cv="prefit")
-    calibrated.fit(validation_df[FEATURE_COLUMNS], validation_df["target"].astype(int))
 
     x_test = test_df[FEATURE_COLUMNS]
     y_test = test_df["target"].astype(int)
-    predictions = calibrated.predict(x_test)
-    probabilities = calibrated.predict_proba(x_test)[:, 1]
-    print(classification_report(y_test, predictions))
-    print(confusion_matrix(y_test, predictions))
-    print(f"ROC-AUC: {roc_auc_score(y_test, probabilities):.4f}")
+    base_macro_f1 = evaluate_model("uncalibrated_xgboost", base_model, x_test, y_test)
+
+    calibrated = CalibratedClassifierCV(base_model, method="sigmoid", cv="prefit")
+    calibrated.fit(validation_df[FEATURE_COLUMNS], validation_df["target"].astype(int))
+    calibrated_macro_f1 = evaluate_model("sigmoid_calibrated_xgboost", calibrated, x_test, y_test)
+
+    export_model = calibrated if calibrated_macro_f1 >= base_macro_f1 else base_model
+    export_name = "sigmoid_calibrated_xgboost" if calibrated_macro_f1 >= base_macro_f1 else "uncalibrated_xgboost"
+    print(f"exporting_model={export_name}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(calibrated, output_path)
+    joblib.dump(export_model, output_path)
 
 
 def main() -> None:
