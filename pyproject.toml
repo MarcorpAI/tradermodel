@@ -1,0 +1,32 @@
+[project]
+name = "xauusd-signal"
+version = "0.1.0"
+description = "Local XAUUSD AI signal system with OANDA data, XGBoost inference, Groq review, risk filtering, and Discord delivery."
+requires-python = ">=3.11"
+dependencies = [
+    "apscheduler>=3.10",
+    "feedparser>=6.0",
+    "joblib>=1.3",
+    "numpy>=1.26",
+    "openai>=1.30",
+    "pandas>=2.2",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "websocket-client>=1.8",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "responses>=0.25",
+]
+train = [
+    "optuna>=3.6",
+    "scikit-learn>=1.4",
+    "xgboost>=2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

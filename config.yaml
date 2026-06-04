@@ -1,0 +1,71 @@
+market_data:
+  provider: deriv
+  instrument: frxXAUUSD
+  dxy_proxy_instrument: frxEURUSD
+  primary_granularity: M15
+  higher_granularities: [H1, H4]
+  candles_lookback: 240
+  stale_after_minutes: 20
+
+deriv:
+  app_id: 1089
+  websocket_url: wss://ws.derivws.com/websockets/v3
+
+training_data:
+  provider: twelve_data
+  symbol: XAU/USD
+  dxy_proxy_symbol: EUR/USD
+  interval: 15min
+  years: 5
+  output: data/xauusd_m15.csv
+  timezone: UTC
+  chunk_days: 30
+
+oanda:
+  account_type: practice
+  instrument: XAU_USD
+  dxy_proxy_instrument: EUR_USD
+
+database:
+  path: data/xauusd.db
+
+model:
+  path: models/xgb_xauusd_v1.pkl
+  retrain_interval_weeks: 8
+
+llm:
+  provider: groq
+  model: llama-3.3-70b-versatile
+  temperature: 0
+  timeout_seconds: 30
+
+risk:
+  min_confidence: 65
+  min_rr_ratio: 1.5
+  atr_sl_multiplier: 1.5
+  atr_tp_multiplier: 2.25
+  news_blackout_hours_before: 2
+  news_blackout_minutes_after: 30
+  session_cooldown_minutes: 30
+  daily_drawdown_limit_r: 3
+  suppress_asian_session: true
+  asian_h4_strength_min: 0.8
+
+sentiment:
+  lookback_hours: 6
+  feeds:
+    - https://www.fxstreet.com/rss/news
+  positive_words: [rally, surge, demand, safe-haven, haven, climbs, rises, bullish, rebound]
+  negative_words: [drop, pressure, selloff, falls, bearish, slips, weakens]
+
+calendar:
+  provider: tradays
+  manual_events_csv: data/news_blackouts.csv
+  high_impact_keywords: [NFP, FOMC, CPI, PPI, GDP, Fed Chair, Rate Decision, Nonfarm Payrolls]
+
+discord:
+  min_confidence_to_notify: 65
+
+logging:
+  level: INFO
+  file: logs/system.log

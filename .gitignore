@@ -1,0 +1,14 @@
+.env
+*.db
+*.sqlite
+*.sqlite3
+*.pkl
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+logs/*.log
+data/*.csv
+data/**/*.csv
+models/*.joblib
