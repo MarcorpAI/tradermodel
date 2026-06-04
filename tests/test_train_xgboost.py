@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
-from scripts.train_xgboost import make_training_frame
+from scripts.train_xgboost import LABELS, make_three_class_target, make_training_frame
 from xauusd_signal.feature_engine import FEATURE_COLUMNS
 
 
@@ -47,4 +47,21 @@ def test_make_training_frame_reuses_live_feature_columns(tmp_path):
     assert not ready.empty
     for column in FEATURE_COLUMNS:
         assert column in frame.columns
-    assert set(ready["target"].unique()).issubset({0, 1})
+    assert set(ready["target"].unique()).issubset(set(LABELS.values()))
+
+
+def test_make_three_class_target_encodes_sell_hold_buy():
+    frame = pd.DataFrame(
+        {
+            "close": [100, 100, 100, 100, 100, 100],
+            "high": [100, 103, 100, 100, 100, 100],
+            "low": [100, 100, 97, 100, 100, 100],
+            "atr_14": [2, 2, 2, 2, 2, 2],
+        }
+    )
+
+    target = make_three_class_target(frame, lookahead=1, atr_threshold=1.0)
+
+    assert target.iloc[0] == LABELS["BUY"]
+    assert target.iloc[1] == LABELS["SELL"]
+    assert target.iloc[2] == LABELS["HOLD"]

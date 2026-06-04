@@ -25,6 +25,8 @@ class ModelPrediction:
 
     @property
     def confidence(self) -> int:
+        if self.direction == "HOLD":
+            return 0
         return int(round(max(self.buy_probability, self.sell_probability) * 100))
 
 
@@ -46,4 +48,3 @@ class Signal:
 class RiskDecision:
     accepted: bool
     reject_reason: str | None = None
-

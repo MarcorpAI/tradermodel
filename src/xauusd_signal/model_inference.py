@@ -24,10 +24,24 @@ class ModelInference:
         model = self.load()
         probabilities = model.predict_proba(features)[0]
         classes = list(getattr(model, "classes_", [0, 1]))
+        if 2 in classes:
+            hold_idx = classes.index(1) if 1 in classes else None
+            buy_idx = classes.index(2)
+            sell_idx = classes.index(0)
+            hold_probability = float(probabilities[hold_idx]) if hold_idx is not None else 0.0
+            sell_probability = float(probabilities[sell_idx])
+            buy_probability = float(probabilities[buy_idx])
+            if hold_probability >= max(buy_probability, sell_probability):
+                return ModelPrediction(
+                    direction="HOLD",
+                    buy_probability=buy_probability,
+                    sell_probability=sell_probability,
+                )
+            direction = "BUY" if buy_probability >= sell_probability else "SELL"
+            return ModelPrediction(direction=direction, buy_probability=buy_probability, sell_probability=sell_probability)
         sell_idx = classes.index(0) if 0 in classes else 0
         buy_idx = classes.index(1) if 1 in classes else 1
         sell_probability = float(probabilities[sell_idx])
         buy_probability = float(probabilities[buy_idx])
         direction = "BUY" if buy_probability >= sell_probability else "SELL"
         return ModelPrediction(direction=direction, buy_probability=buy_probability, sell_probability=sell_probability)
-

@@ -14,6 +14,9 @@ from xgboost import XGBClassifier
 from xauusd_signal.domain import Candle
 from xauusd_signal.feature_engine import FEATURE_COLUMNS, add_price_features
 
+LABELS = {"SELL": 0, "HOLD": 1, "BUY": 2}
+LABEL_NAMES = {value: key for key, value in LABELS.items()}
+
 
 def frame_to_candles(frame: pd.DataFrame, granularity: str, instrument: str) -> list[Candle]:
     rows = []
@@ -43,18 +46,38 @@ def make_training_frame(
     h4_path: Path,
     dxy_path: Path,
     sentiment_score: float = 0.0,
+    target_mode: str = "three_class",
+    lookahead: int = 12,
+    atr_threshold: float = 1.0,
 ) -> pd.DataFrame:
     m15_frame = load_csv(m15_path)
     h1_frame = load_csv(h1_path)
     h4_frame = load_csv(h4_path)
     dxy_frame = load_csv(dxy_path)
     df = build_training_features(m15_frame, h1_frame, h4_frame, dxy_frame, sentiment_score)
-    future_close = df["close"].shift(-4)
-    threshold = 0.5 * df["atr_14"]
-    df["target"] = pd.NA
-    df.loc[future_close > df["close"] + threshold, "target"] = 1
-    df.loc[future_close < df["close"] - threshold, "target"] = 0
+    if target_mode == "binary":
+        future_close = df["close"].shift(-4)
+        threshold = 0.5 * df["atr_14"]
+        df["target"] = pd.NA
+        df.loc[future_close > df["close"] + threshold, "target"] = 1
+        df.loc[future_close < df["close"] - threshold, "target"] = 0
+    elif target_mode == "three_class":
+        df["target"] = make_three_class_target(df, lookahead, atr_threshold)
+    else:
+        raise ValueError(f"Unsupported target mode: {target_mode}")
     return df.dropna(subset=FEATURE_COLUMNS + ["target"]).copy()
+
+
+def make_three_class_target(frame: pd.DataFrame, lookahead: int, atr_threshold: float) -> pd.Series:
+    future_high = pd.concat([frame["high"].shift(-step) for step in range(1, lookahead + 1)], axis=1).max(axis=1)
+    future_low = pd.concat([frame["low"].shift(-step) for step in range(1, lookahead + 1)], axis=1).min(axis=1)
+    up_hit = future_high >= frame["close"] + (atr_threshold * frame["atr_14"])
+    down_hit = future_low <= frame["close"] - (atr_threshold * frame["atr_14"])
+    target = pd.Series(LABELS["HOLD"], index=frame.index)
+    target[up_hit & ~down_hit] = LABELS["BUY"]
+    target[down_hit & ~up_hit] = LABELS["SELL"]
+    target[future_high.isna() | future_low.isna()] = pd.NA
+    return target
 
 
 def build_training_features(
@@ -129,9 +152,7 @@ def objective(train: pd.DataFrame, validation: pd.DataFrame):
     y_train = train["target"].astype(int)
     x_val = validation[FEATURE_COLUMNS]
     y_val = validation["target"].astype(int)
-    negative = int((y_train == 0).sum())
-    positive = int((y_train == 1).sum())
-    scale_pos_weight = negative / positive if positive else 1.0
+    sample_weight = class_balanced_sample_weight(y_train)
 
     def _objective(trial: optuna.Trial) -> float:
         model = XGBClassifier(
@@ -143,15 +164,23 @@ def objective(train: pd.DataFrame, validation: pd.DataFrame):
             min_child_weight=trial.suggest_categorical("min_child_weight", [1, 3, 5]),
             reg_alpha=trial.suggest_categorical("reg_alpha", [0, 0.1, 0.5]),
             reg_lambda=trial.suggest_categorical("reg_lambda", [1, 1.5, 2.0]),
-            scale_pos_weight=scale_pos_weight,
-            eval_metric="logloss",
+            objective="multi:softprob",
+            num_class=3,
+            eval_metric="mlogloss",
             random_state=42,
         )
-        model.fit(x_train, y_train)
+        model.fit(x_train, y_train, sample_weight=sample_weight)
         predictions = model.predict(x_val)
         return f1_score(y_val, predictions, average="macro", zero_division=0)
 
     return _objective
+
+
+def class_balanced_sample_weight(target: pd.Series) -> np.ndarray:
+    counts = target.value_counts().to_dict()
+    total = len(target)
+    classes = len(counts)
+    return target.map(lambda value: total / (classes * counts[value])).to_numpy()
 
 
 def print_dataset_summary(train_df: pd.DataFrame, validation_df: pd.DataFrame, test_df: pd.DataFrame) -> None:
@@ -162,12 +191,14 @@ def print_dataset_summary(train_df: pd.DataFrame, validation_df: pd.DataFrame, t
 
 def evaluate_model(name: str, model, x_test: pd.DataFrame, y_test: pd.Series) -> float:
     predictions = model.predict(x_test)
-    probabilities = model.predict_proba(x_test)[:, 1]
+    probabilities = model.predict_proba(x_test)
     print(f"\n=== {name} ===")
-    print(classification_report(y_test, predictions, zero_division=0))
+    labels = sorted(y_test.unique())
+    target_names = [LABEL_NAMES.get(int(label), str(label)) for label in labels]
+    print(classification_report(y_test, predictions, labels=labels, target_names=target_names, zero_division=0))
     print(confusion_matrix(y_test, predictions))
     try:
-        print(f"ROC-AUC: {roc_auc_score(y_test, probabilities):.4f}")
+        print(f"ROC-AUC: {roc_auc_score(y_test, probabilities, multi_class='ovr'):.4f}")
     except ValueError:
         print("ROC-AUC: unavailable")
     macro_f1 = f1_score(y_test, predictions, average="macro", zero_division=0)
@@ -179,8 +210,8 @@ def evaluate_model(name: str, model, x_test: pd.DataFrame, y_test: pd.Series) ->
 
 def print_confidence_report(probabilities: np.ndarray, y_test: pd.Series) -> None:
     y = y_test.to_numpy()
-    predicted = (probabilities >= 0.5).astype(int)
-    confidence = np.maximum(probabilities, 1 - probabilities)
+    predicted = probabilities.argmax(axis=1)
+    confidence = probabilities.max(axis=1)
     print("confidence_threshold_report")
     for threshold in [0.55, 0.60, 0.65, 0.70, 0.75]:
         mask = confidence >= threshold
@@ -190,12 +221,20 @@ def print_confidence_report(probabilities: np.ndarray, y_test: pd.Series) -> Non
         selected_predictions = predicted[mask]
         selected_truth = y[mask]
         precision = float((selected_predictions == selected_truth).mean())
+        trade_mask = selected_predictions != LABELS["HOLD"]
+        trade_precision = (
+            float((selected_predictions[trade_mask] == selected_truth[trade_mask]).mean())
+            if trade_mask.any()
+            else None
+        )
         coverage = float(mask.mean())
-        buy_count = int((selected_predictions == 1).sum())
-        sell_count = int((selected_predictions == 0).sum())
+        buy_count = int((selected_predictions == LABELS["BUY"]).sum())
+        sell_count = int((selected_predictions == LABELS["SELL"]).sum())
+        hold_count = int((selected_predictions == LABELS["HOLD"]).sum())
         print(
             f"threshold={threshold:.2f} coverage={coverage:.3f} precision={precision:.3f} "
-            f"trades={int(mask.sum())} buy={buy_count} sell={sell_count}"
+            f"trades={buy_count + sell_count} trade_precision={trade_precision if trade_precision is not None else 'NA'} "
+            f"buy={buy_count} sell={sell_count} hold={hold_count}"
         )
 
 
@@ -203,24 +242,41 @@ def train(csv_path: Path, output_path: Path, trials: int) -> None:
     raise RuntimeError("Use train_from_bundle with --m15 --h1 --h4 --dxy")
 
 
-def train_from_bundle(m15: Path, h1: Path, h4: Path, dxy: Path, output_path: Path, trials: int) -> None:
-    prepared = make_training_frame(m15, h1, h4, dxy)
+def train_from_bundle(
+    m15: Path,
+    h1: Path,
+    h4: Path,
+    dxy: Path,
+    output_path: Path,
+    trials: int,
+    target_mode: str,
+    lookahead: int,
+    atr_threshold: float,
+) -> None:
+    prepared = make_training_frame(
+        m15,
+        h1,
+        h4,
+        dxy,
+        target_mode=target_mode,
+        lookahead=lookahead,
+        atr_threshold=atr_threshold,
+    )
     train_df, validation_df, test_df = chronological_split(prepared)
     print_dataset_summary(train_df, validation_df, test_df)
     study = optuna.create_study(direction="maximize")
     study.optimize(objective(train_df, validation_df), n_trials=trials)
 
     y_train = train_df["target"].astype(int)
-    negative = int((y_train == 0).sum())
-    positive = int((y_train == 1).sum())
-    scale_pos_weight = negative / positive if positive else 1.0
+    sample_weight = class_balanced_sample_weight(y_train)
     base_model = XGBClassifier(
         **study.best_params,
-        scale_pos_weight=scale_pos_weight,
-        eval_metric="logloss",
+        objective="multi:softprob",
+        num_class=3,
+        eval_metric="mlogloss",
         random_state=42,
     )
-    base_model.fit(train_df[FEATURE_COLUMNS], train_df["target"].astype(int))
+    base_model.fit(train_df[FEATURE_COLUMNS], y_train, sample_weight=sample_weight)
 
     x_test = test_df[FEATURE_COLUMNS]
     y_test = test_df["target"].astype(int)
@@ -247,8 +303,21 @@ def main() -> None:
     parser.add_argument("--dxy", type=Path, default=Path("data/training/eurusd_m15.csv"))
     parser.add_argument("--output", default=Path("models/xgb_xauusd_v1.pkl"), type=Path)
     parser.add_argument("--trials", default=50, type=int)
+    parser.add_argument("--target-mode", default="three_class", choices=["three_class", "binary"])
+    parser.add_argument("--lookahead", default=12, type=int)
+    parser.add_argument("--atr-threshold", default=1.0, type=float)
     args = parser.parse_args()
-    train_from_bundle(args.m15, args.h1, args.h4, args.dxy, args.output, args.trials)
+    train_from_bundle(
+        args.m15,
+        args.h1,
+        args.h4,
+        args.dxy,
+        args.output,
+        args.trials,
+        args.target_mode,
+        args.lookahead,
+        args.atr_threshold,
+    )
 
 
 if __name__ == "__main__":
