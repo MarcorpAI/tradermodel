@@ -9,6 +9,7 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parent))
 
 from train_xgboost import make_training_frame
+from xauusd_signal.research.labels import TripleBarrierConfig, triple_barrier_labels
 
 
 def make_three_class_target(frame: pd.DataFrame, lookahead: int, atr_up: float, atr_down: float) -> pd.Series:
@@ -57,6 +58,16 @@ def summarize_targets(frame: pd.DataFrame, lookaheads: list[int], atr_values: li
                 target = make_first_touch_target(frame, lookahead, atr, atr)
             elif mode == "close_return":
                 target = make_close_return_target(frame, lookahead, atr, atr)
+            elif mode == "triple_barrier":
+                labeled = triple_barrier_labels(
+                    frame,
+                    TripleBarrierConfig(
+                        take_profit_atr=atr,
+                        stop_loss_atr=1.0,
+                        vertical_barrier=lookahead,
+                    ),
+                )
+                target = labeled["target"].map({0: "SELL", 1: "HOLD", 2: "BUY"})
             else:
                 target = make_three_class_target(frame, lookahead, atr, atr)
             counts = target.value_counts().to_dict()
@@ -89,7 +100,7 @@ def main() -> None:
     parser.add_argument("--dxy", type=Path, default=Path("data/training/eurusd_m15.csv"))
     parser.add_argument("--lookaheads", default="4,8,12,16")
     parser.add_argument("--atr-thresholds", default="0.5,0.75,1.0,1.25,1.5")
-    parser.add_argument("--mode", default="first_touch", choices=["first_touch", "any_touch", "close_return"])
+    parser.add_argument("--mode", default="first_touch", choices=["first_touch", "any_touch", "close_return", "triple_barrier"])
     args = parser.parse_args()
 
     frame = make_training_frame(args.m15, args.h1, args.h4, args.dxy)

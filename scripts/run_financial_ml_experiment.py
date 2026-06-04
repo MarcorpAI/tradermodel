@@ -13,7 +13,7 @@ from xgboost import XGBClassifier
 
 sys.path.append(str(Path(__file__).resolve().parent))
 
-from train_xgboost import FEATURE_COLUMNS, class_balanced_sample_weight, make_training_frame
+from train_xgboost import FEATURE_COLUMNS, build_training_features, class_balanced_sample_weight, load_csv
 from xauusd_signal.research.cv import purged_walk_forward_splits
 from xauusd_signal.research.labels import LABEL_NAMES, TripleBarrierConfig, label_distribution, triple_barrier_labels
 from xauusd_signal.research.metrics import EvaluationConfig, evaluate_predictions
@@ -161,7 +161,13 @@ def main() -> None:
     parser.add_argument("--export-if-pass", action="store_true")
     args = parser.parse_args()
 
-    frame = make_training_frame(args.m15, args.h1, args.h4, args.dxy, target_mode="binary")
+    frame = build_training_features(
+        load_csv(args.m15),
+        load_csv(args.h1),
+        load_csv(args.h4),
+        load_csv(args.dxy),
+        sentiment_score=0.0,
+    ).dropna(subset=FEATURE_COLUMNS)
     if args.max_rows is not None:
         frame = frame.tail(args.max_rows).reset_index(drop=True)
     label_config = TripleBarrierConfig(
