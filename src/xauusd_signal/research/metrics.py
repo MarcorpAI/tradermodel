@@ -86,6 +86,8 @@ def threshold_metrics(
         expected_r = None
         profit_factor = None
         max_drawdown = None
+        buy_precision = None
+        sell_precision = None
     else:
         wins = trade_pred == trade_true
         trade_precision = float(wins.mean())
@@ -95,12 +97,18 @@ def threshold_metrics(
         losses = abs(signed_r[signed_r < 0].sum())
         profit_factor = float(gains / losses) if losses else None
         max_drawdown = max_drawdown_r(signed_r)
+        buy_mask = trade_pred == LABELS["BUY"]
+        sell_mask = trade_pred == LABELS["SELL"]
+        buy_precision = float((trade_true[buy_mask] == LABELS["BUY"]).mean()) if buy_mask.any() else None
+        sell_precision = float((trade_true[sell_mask] == LABELS["SELL"]).mean()) if sell_mask.any() else None
 
     return {
         "threshold": threshold,
         "coverage": float(mask.mean()),
         "trades": int(len(trade_pred)),
         "trade_precision": trade_precision,
+        "buy_precision": buy_precision,
+        "sell_precision": sell_precision,
         "expected_r": expected_r,
         "profit_factor": profit_factor,
         "max_drawdown_r": max_drawdown,
@@ -117,4 +125,3 @@ def max_drawdown_r(returns: np.ndarray) -> float:
     running_peak = np.maximum.accumulate(equity)
     drawdown = running_peak - equity
     return float(drawdown.max())
-

@@ -90,6 +90,7 @@ def run_experiment(
         fold_valid = train_df.iloc[valid_cut:]
         print(
             f"fold={split.fold} train={len(fold_train)} valid={len(fold_valid)} test={len(test_df)} "
+            f"test_start={test_df['timestamp'].iloc[0]} test_end={test_df['timestamp'].iloc[-1]} "
             f"train_labels={label_distribution(train_df)} test_labels={label_distribution(test_df)}"
         )
         model = train_model(fold_train, fold_valid, trials)
@@ -112,7 +113,8 @@ def print_fold_metrics(fold: int, metrics: dict[str, Any]) -> None:
             f"{row['threshold']:.2f} coverage={row['coverage']:.3f} trades={row['trades']} "
             f"trade_precision={fmt(row['trade_precision'])} expected_r={fmt(row['expected_r'])} "
             f"profit_factor={fmt(row['profit_factor'])} max_dd_r={fmt(row['max_drawdown_r'])} "
-            f"buy={row['buy']} sell={row['sell']} hold={row['hold']}"
+            f"buy={row['buy']} sell={row['sell']} hold={row['hold']} "
+            f"buy_precision={fmt(row['buy_precision'])} sell_precision={fmt(row['sell_precision'])}"
         )
 
 
