@@ -46,9 +46,9 @@ def make_training_frame(
     h4_path: Path,
     dxy_path: Path,
     sentiment_score: float = 0.0,
-    target_mode: str = "three_class",
-    lookahead: int = 4,
-    atr_threshold: float = 1.25,
+    target_mode: str = "close_return",
+    lookahead: int = 8,
+    atr_threshold: float = 1.0,
 ) -> pd.DataFrame:
     m15_frame = load_csv(m15_path)
     h1_frame = load_csv(h1_path)
@@ -61,8 +61,10 @@ def make_training_frame(
         df["target"] = pd.NA
         df.loc[future_close > df["close"] + threshold, "target"] = 1
         df.loc[future_close < df["close"] - threshold, "target"] = 0
-    elif target_mode == "three_class":
+    elif target_mode in {"first_touch", "three_class"}:
         df["target"] = make_first_touch_target(df, lookahead, atr_threshold)
+    elif target_mode == "close_return":
+        df["target"] = make_close_return_target(df, lookahead, atr_threshold)
     else:
         raise ValueError(f"Unsupported target mode: {target_mode}")
     return df.dropna(subset=FEATURE_COLUMNS + ["target"]).copy()
@@ -96,6 +98,15 @@ def make_first_touch_target(frame: pd.DataFrame, lookahead: int, atr_threshold: 
         unresolved[buy_now | sell_now | ambiguous_now] = False
     future_available = frame["high"].shift(-lookahead).notna() & frame["low"].shift(-lookahead).notna()
     target[~future_available] = pd.NA
+    return target
+
+
+def make_close_return_target(frame: pd.DataFrame, lookahead: int, atr_threshold: float) -> pd.Series:
+    future_close = frame["close"].shift(-lookahead)
+    target = pd.Series(LABELS["HOLD"], index=frame.index)
+    target[future_close >= frame["close"] + (atr_threshold * frame["atr_14"])] = LABELS["BUY"]
+    target[future_close <= frame["close"] - (atr_threshold * frame["atr_14"])] = LABELS["SELL"]
+    target[future_close.isna()] = pd.NA
     return target
 
 
@@ -322,9 +333,9 @@ def main() -> None:
     parser.add_argument("--dxy", type=Path, default=Path("data/training/eurusd_m15.csv"))
     parser.add_argument("--output", default=Path("models/xgb_xauusd_v1.pkl"), type=Path)
     parser.add_argument("--trials", default=50, type=int)
-    parser.add_argument("--target-mode", default="three_class", choices=["three_class", "binary"])
-    parser.add_argument("--lookahead", default=4, type=int)
-    parser.add_argument("--atr-threshold", default=1.25, type=float)
+    parser.add_argument("--target-mode", default="close_return", choices=["close_return", "first_touch", "three_class", "binary"])
+    parser.add_argument("--lookahead", default=8, type=int)
+    parser.add_argument("--atr-threshold", default=1.0, type=float)
     args = parser.parse_args()
     train_from_bundle(
         args.m15,

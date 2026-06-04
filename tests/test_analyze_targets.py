@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from scripts.analyze_targets import make_first_touch_target, make_three_class_target, summarize_targets
+from scripts.analyze_targets import make_close_return_target, make_first_touch_target, make_three_class_target, summarize_targets
 
 
 def test_make_three_class_target_labels_buy_sell_hold():
@@ -51,3 +51,19 @@ def test_make_first_touch_target_uses_first_barrier_hit():
 
     assert target.iloc[0] == "BUY"
     assert target.iloc[1] == "HOLD"
+
+
+def test_make_close_return_target_uses_horizon_close():
+    frame = pd.DataFrame(
+        {
+            "close": [100, 103, 97, 100],
+            "high": [100, 103, 100, 100],
+            "low": [100, 100, 97, 100],
+            "atr_14": [2, 2, 2, 2],
+        }
+    )
+
+    target = make_close_return_target(frame, lookahead=1, atr_up=1.0, atr_down=1.0)
+
+    assert target.iloc[0] == "BUY"
+    assert target.iloc[1] == "SELL"

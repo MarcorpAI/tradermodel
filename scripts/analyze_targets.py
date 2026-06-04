@@ -39,6 +39,15 @@ def make_first_touch_target(frame: pd.DataFrame, lookahead: int, atr_up: float, 
     return target
 
 
+def make_close_return_target(frame: pd.DataFrame, lookahead: int, atr_up: float, atr_down: float) -> pd.Series:
+    future_close = frame["close"].shift(-lookahead)
+    target = pd.Series("HOLD", index=frame.index)
+    target[future_close >= frame["close"] + (atr_up * frame["atr_14"])] = "BUY"
+    target[future_close <= frame["close"] - (atr_down * frame["atr_14"])] = "SELL"
+    target[future_close.isna()] = pd.NA
+    return target
+
+
 def summarize_targets(frame: pd.DataFrame, lookaheads: list[int], atr_values: list[float], mode: str) -> pd.DataFrame:
     rows = []
     total = len(frame)
@@ -46,6 +55,8 @@ def summarize_targets(frame: pd.DataFrame, lookaheads: list[int], atr_values: li
         for atr in atr_values:
             if mode == "first_touch":
                 target = make_first_touch_target(frame, lookahead, atr, atr)
+            elif mode == "close_return":
+                target = make_close_return_target(frame, lookahead, atr, atr)
             else:
                 target = make_three_class_target(frame, lookahead, atr, atr)
             counts = target.value_counts().to_dict()
@@ -78,7 +89,7 @@ def main() -> None:
     parser.add_argument("--dxy", type=Path, default=Path("data/training/eurusd_m15.csv"))
     parser.add_argument("--lookaheads", default="4,8,12,16")
     parser.add_argument("--atr-thresholds", default="0.5,0.75,1.0,1.25,1.5")
-    parser.add_argument("--mode", default="first_touch", choices=["first_touch", "any_touch"])
+    parser.add_argument("--mode", default="first_touch", choices=["first_touch", "any_touch", "close_return"])
     args = parser.parse_args()
 
     frame = make_training_frame(args.m15, args.h1, args.h4, args.dxy)
