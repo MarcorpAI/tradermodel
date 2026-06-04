@@ -65,6 +65,8 @@ def threshold_metrics(
             "coverage": 0.0,
             "trades": 0,
             "trade_precision": None,
+            "buy_precision": None,
+            "sell_precision": None,
             "expected_r": None,
             "profit_factor": None,
             "max_drawdown_r": None,

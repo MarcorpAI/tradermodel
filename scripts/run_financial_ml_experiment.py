@@ -114,7 +114,7 @@ def print_fold_metrics(fold: int, metrics: dict[str, Any]) -> None:
             f"trade_precision={fmt(row['trade_precision'])} expected_r={fmt(row['expected_r'])} "
             f"profit_factor={fmt(row['profit_factor'])} max_dd_r={fmt(row['max_drawdown_r'])} "
             f"buy={row['buy']} sell={row['sell']} hold={row['hold']} "
-            f"buy_precision={fmt(row['buy_precision'])} sell_precision={fmt(row['sell_precision'])}"
+            f"buy_precision={fmt(row.get('buy_precision'))} sell_precision={fmt(row.get('sell_precision'))}"
         )
 
 
