@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 
-from scripts.train_xgboost import LABELS, make_three_class_target, make_training_frame
+from scripts.train_xgboost import LABELS, make_first_touch_target, make_three_class_target, make_training_frame
 from xauusd_signal.feature_engine import FEATURE_COLUMNS
 
 
@@ -65,3 +65,19 @@ def test_make_three_class_target_encodes_sell_hold_buy():
     assert target.iloc[0] == LABELS["BUY"]
     assert target.iloc[1] == LABELS["SELL"]
     assert target.iloc[2] == LABELS["HOLD"]
+
+
+def test_make_first_touch_target_encodes_first_barrier_only():
+    frame = pd.DataFrame(
+        {
+            "close": [100, 100, 100, 100],
+            "high": [100, 103, 103, 100],
+            "low": [100, 100, 97, 100],
+            "atr_14": [2, 2, 2, 2],
+        }
+    )
+
+    target = make_first_touch_target(frame, lookahead=2, atr_threshold=1.0)
+
+    assert target.iloc[0] == LABELS["BUY"]
+    assert target.iloc[1] == LABELS["HOLD"]

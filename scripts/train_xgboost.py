@@ -47,8 +47,8 @@ def make_training_frame(
     dxy_path: Path,
     sentiment_score: float = 0.0,
     target_mode: str = "three_class",
-    lookahead: int = 12,
-    atr_threshold: float = 1.0,
+    lookahead: int = 4,
+    atr_threshold: float = 1.25,
 ) -> pd.DataFrame:
     m15_frame = load_csv(m15_path)
     h1_frame = load_csv(h1_path)
@@ -62,7 +62,7 @@ def make_training_frame(
         df.loc[future_close > df["close"] + threshold, "target"] = 1
         df.loc[future_close < df["close"] - threshold, "target"] = 0
     elif target_mode == "three_class":
-        df["target"] = make_three_class_target(df, lookahead, atr_threshold)
+        df["target"] = make_first_touch_target(df, lookahead, atr_threshold)
     else:
         raise ValueError(f"Unsupported target mode: {target_mode}")
     return df.dropna(subset=FEATURE_COLUMNS + ["target"]).copy()
@@ -77,6 +77,25 @@ def make_three_class_target(frame: pd.DataFrame, lookahead: int, atr_threshold: 
     target[up_hit & ~down_hit] = LABELS["BUY"]
     target[down_hit & ~up_hit] = LABELS["SELL"]
     target[future_high.isna() | future_low.isna()] = pd.NA
+    return target
+
+
+def make_first_touch_target(frame: pd.DataFrame, lookahead: int, atr_threshold: float) -> pd.Series:
+    upper = frame["close"] + (atr_threshold * frame["atr_14"])
+    lower = frame["close"] - (atr_threshold * frame["atr_14"])
+    target = pd.Series(LABELS["HOLD"], index=frame.index)
+    unresolved = pd.Series(True, index=frame.index)
+    for step in range(1, lookahead + 1):
+        high_hit = frame["high"].shift(-step) >= upper
+        low_hit = frame["low"].shift(-step) <= lower
+        buy_now = unresolved & high_hit & ~low_hit
+        sell_now = unresolved & low_hit & ~high_hit
+        ambiguous_now = unresolved & high_hit & low_hit
+        target[buy_now] = LABELS["BUY"]
+        target[sell_now] = LABELS["SELL"]
+        unresolved[buy_now | sell_now | ambiguous_now] = False
+    future_available = frame["high"].shift(-lookahead).notna() & frame["low"].shift(-lookahead).notna()
+    target[~future_available] = pd.NA
     return target
 
 
@@ -304,8 +323,8 @@ def main() -> None:
     parser.add_argument("--output", default=Path("models/xgb_xauusd_v1.pkl"), type=Path)
     parser.add_argument("--trials", default=50, type=int)
     parser.add_argument("--target-mode", default="three_class", choices=["three_class", "binary"])
-    parser.add_argument("--lookahead", default=12, type=int)
-    parser.add_argument("--atr-threshold", default=1.0, type=float)
+    parser.add_argument("--lookahead", default=4, type=int)
+    parser.add_argument("--atr-threshold", default=1.25, type=float)
     args = parser.parse_args()
     train_from_bundle(
         args.m15,
