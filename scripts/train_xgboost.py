@@ -173,7 +173,30 @@ def evaluate_model(name: str, model, x_test: pd.DataFrame, y_test: pd.Series) ->
     macro_f1 = f1_score(y_test, predictions, average="macro", zero_division=0)
     print(f"Macro-F1: {macro_f1:.4f}")
     print(f"predicted_counts={dict(zip(*np.unique(predictions, return_counts=True)))}")
+    print_confidence_report(probabilities, y_test)
     return macro_f1
+
+
+def print_confidence_report(probabilities: np.ndarray, y_test: pd.Series) -> None:
+    y = y_test.to_numpy()
+    predicted = (probabilities >= 0.5).astype(int)
+    confidence = np.maximum(probabilities, 1 - probabilities)
+    print("confidence_threshold_report")
+    for threshold in [0.55, 0.60, 0.65, 0.70, 0.75]:
+        mask = confidence >= threshold
+        if not mask.any():
+            print(f"threshold={threshold:.2f} coverage=0 precision=NA trades=0")
+            continue
+        selected_predictions = predicted[mask]
+        selected_truth = y[mask]
+        precision = float((selected_predictions == selected_truth).mean())
+        coverage = float(mask.mean())
+        buy_count = int((selected_predictions == 1).sum())
+        sell_count = int((selected_predictions == 0).sum())
+        print(
+            f"threshold={threshold:.2f} coverage={coverage:.3f} precision={precision:.3f} "
+            f"trades={int(mask.sum())} buy={buy_count} sell={sell_count}"
+        )
 
 
 def train(csv_path: Path, output_path: Path, trials: int) -> None:
