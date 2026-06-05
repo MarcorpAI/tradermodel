@@ -4,6 +4,7 @@ import argparse
 from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
+from time import sleep
 
 import pandas as pd
 import requests
@@ -32,15 +33,24 @@ def normalize_fred_csv(frame: pd.DataFrame, series_id: str) -> pd.DataFrame:
     return output.dropna().sort_values("timestamp").reset_index(drop=True)
 
 
-def fetch_fred_series(series_id: str, years: float) -> pd.DataFrame:
+def fetch_fred_series(series_id: str, years: float, timeout: int = 90, retries: int = 3) -> pd.DataFrame:
     start = (datetime.now(UTC) - timedelta(days=365.25 * years)).date().isoformat()
-    response = requests.get(BASE_URL, params={"id": series_id, "observation_start": start}, timeout=30)
-    response.raise_for_status()
-    return pd.read_csv(StringIO(response.text))
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.get(BASE_URL, params={"id": series_id, "observation_start": start}, timeout=timeout)
+            response.raise_for_status()
+            return pd.read_csv(StringIO(response.text))
+        except requests.RequestException as exc:
+            last_error = exc
+            if attempt == retries:
+                break
+            sleep(2 * attempt)
+    raise RuntimeError(f"FRED request failed after {retries} attempts") from last_error
 
 
-def export_fred_series(series_id: str, years: float, output: Path) -> dict[str, object]:
-    normalized = normalize_fred_csv(fetch_fred_series(series_id, years), series_id)
+def export_fred_series(series_id: str, years: float, output: Path, timeout: int = 90, retries: int = 3) -> dict[str, object]:
+    normalized = normalize_fred_csv(fetch_fred_series(series_id, years, timeout, retries), series_id)
     output.parent.mkdir(parents=True, exist_ok=True)
     normalized.to_csv(output, index=False)
     return {
@@ -55,9 +65,11 @@ def main() -> None:
     parser.add_argument("--series", default="DGS10")
     parser.add_argument("--years", type=float, default=5)
     parser.add_argument("--output", type=Path, default=Path("data/training/us10y_daily.csv"))
+    parser.add_argument("--timeout", type=int, default=90)
+    parser.add_argument("--retries", type=int, default=3)
     args = parser.parse_args()
 
-    report = export_fred_series(args.series, args.years, args.output)
+    report = export_fred_series(args.series, args.years, args.output, args.timeout, args.retries)
     print("coverage=" + " ".join(f"{key}={value}" for key, value in report.items()))
 
 
