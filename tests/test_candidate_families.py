@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from scripts.analyze_candidate_families import bucket_atr_percentile, group_report, select_survivors
-from xauusd_signal.research.candidate_families import generate_candidate_families
+from xauusd_signal.research.candidate_families import generate_candidate_families, generate_overlap_macro_trend_candidates
 from xauusd_signal.research.candidates import CandidateConfig
 
 
@@ -39,6 +39,22 @@ def test_generate_candidate_families_emits_named_buy_families():
     assert not candidates.empty
     assert set(candidates["side"]) == {"BUY"}
     assert {"trend_continuation", "breakout"}.issubset(set(candidates["candidate_family"]))
+
+
+def test_generate_overlap_macro_trend_candidates_filters_to_overlap_strong_h4_and_dxy_confirmation():
+    frame = base_frame()
+    frame["session_overlap"] = 1
+    frame["session_london"] = 1
+    frame["session_newyork"] = 1
+    frame["h4_trend"] = 1
+    frame["dxy_above_ema_20"] = 0
+    focused = generate_overlap_macro_trend_candidates(frame, CandidateConfig(min_atr_percentile=0.0, max_atr_percentile=1.0))
+
+    assert not focused.empty
+    assert focused["candidate_family"].eq("overlap_macro_trend").all()
+    assert set(focused["source_candidate_family"]).issubset({"trend_continuation", "breakout", "ema_pullback"})
+    assert focused["side"].eq("BUY").all()
+    assert focused["session_overlap"].eq(1).all()
 
 
 def test_group_report_summarizes_expected_r_by_group():

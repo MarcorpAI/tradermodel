@@ -33,3 +33,18 @@ def generate_candidate_families(frame: pd.DataFrame, config: CandidateConfig) ->
     if not outputs:
         return pd.DataFrame(columns=list(data.columns) + ["candidate_family", "side"])
     return pd.concat(outputs, ignore_index=True).sort_values(["timestamp", "candidate_family", "side"]).reset_index(drop=True)
+
+
+def generate_overlap_macro_trend_candidates(frame: pd.DataFrame, config: CandidateConfig) -> pd.DataFrame:
+    candidates = generate_candidate_families(frame, config)
+    if candidates.empty:
+        return candidates
+    family_ok = candidates["candidate_family"].isin(["trend_continuation", "breakout", "ema_pullback"])
+    overlap = candidates["session_overlap"].eq(1)
+    h4_strong = candidates["h4_trend_strength"].ge(0.60)
+    buy_ok = candidates["side"].eq("BUY") & candidates["h4_trend"].eq(1) & candidates["dxy_weak"].eq(1)
+    sell_ok = candidates["side"].eq("SELL") & candidates["h4_trend"].eq(-1) & candidates["dxy_strong"].eq(1)
+    focused = candidates.loc[family_ok & overlap & h4_strong & (buy_ok | sell_ok)].copy()
+    focused["source_candidate_family"] = focused["candidate_family"]
+    focused["candidate_family"] = "overlap_macro_trend"
+    return focused.sort_values(["timestamp", "side", "source_candidate_family"]).reset_index(drop=True)
