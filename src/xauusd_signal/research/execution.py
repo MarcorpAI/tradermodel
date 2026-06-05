@@ -44,7 +44,7 @@ def news_blocked(timestamp: pd.Timestamp, news_events: pd.DataFrame, before: int
     return bool(news_events["timestamp"].between(start, end).any())
 
 
-def execution_aware_sell_labels(
+def execution_aware_trade_labels(
     candidates: pd.DataFrame,
     price_frame: pd.DataFrame,
     label_config: TripleBarrierConfig,
@@ -54,8 +54,9 @@ def execution_aware_sell_labels(
 ) -> pd.DataFrame:
     prices = price_frame.reset_index(drop=True)
     rows: list[dict[str, Any]] = []
-    for candidate in candidates.loc[candidates["side"].eq("SELL")].itertuples(index=False):
+    for candidate in candidates.loc[candidates["side"].isin(["BUY", "SELL"])].itertuples(index=False):
         row = candidate._asdict()
+        side = str(row["side"])
         source_index = int(row["source_index"])
         entry_index = source_index + execution_config.entry_delay_candles
         max_end_index = entry_index + label_config.vertical_barrier
@@ -98,9 +99,10 @@ def execution_aware_sell_labels(
             row["execution_block_reason"] = "bad_atr"
             rows.append(row)
             continue
-        result, reason, resolved_index = sell_execution_outcome(
+        result, reason, resolved_index = execution_outcome(
             prices,
             entry_index,
+            side,
             label_config,
             spread,
             atr,
@@ -118,6 +120,39 @@ def execution_aware_sell_labels(
         )
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def execution_aware_sell_labels(
+    candidates: pd.DataFrame,
+    price_frame: pd.DataFrame,
+    label_config: TripleBarrierConfig,
+    news_events: pd.DataFrame,
+    spread_by_session: dict[str, float],
+    execution_config: ExecutionConfig,
+) -> pd.DataFrame:
+    return execution_aware_trade_labels(
+        candidates.loc[candidates["side"].eq("SELL")],
+        price_frame,
+        label_config,
+        news_events,
+        spread_by_session,
+        execution_config,
+    )
+
+
+def execution_outcome(
+    prices: pd.DataFrame,
+    entry_index: int,
+    side: str,
+    label_config: TripleBarrierConfig,
+    spread: float,
+    atr: float,
+) -> tuple[float, str, int]:
+    if side == "SELL":
+        return sell_execution_outcome(prices, entry_index, label_config, spread, atr)
+    if side == "BUY":
+        return buy_execution_outcome(prices, entry_index, label_config, spread, atr)
+    raise ValueError(f"Unsupported execution side: {side}")
 
 
 def sell_execution_outcome(
@@ -148,6 +183,36 @@ def sell_execution_outcome(
             return label_config.take_profit_atr / label_config.stop_loss_atr, "take_profit", idx
     exit_ask = float(prices.iloc[end_index]["close"]) + spread / 2.0
     return (entry_bid - exit_ask) / (label_config.stop_loss_atr * atr), "vertical", end_index
+
+
+def buy_execution_outcome(
+    prices: pd.DataFrame,
+    entry_index: int,
+    label_config: TripleBarrierConfig,
+    spread: float,
+    atr: float,
+) -> tuple[float, str, int]:
+    entry_row = prices.iloc[entry_index]
+    entry_mid = float(entry_row["close"])
+    entry_bid = entry_mid - spread / 2.0
+    entry_ask = entry_mid + spread / 2.0
+    stop_loss = entry_bid - label_config.stop_loss_atr * atr
+    take_profit = entry_ask + label_config.take_profit_atr * atr
+    end_index = entry_index + label_config.vertical_barrier
+    for idx in range(entry_index + 1, end_index + 1):
+        bar = prices.iloc[idx]
+        high_bid = float(bar["high"]) - spread / 2.0
+        low_bid = float(bar["low"]) - spread / 2.0
+        hit_stop = low_bid <= stop_loss
+        hit_take_profit = high_bid >= take_profit
+        if hit_stop and hit_take_profit:
+            return -1.0, "ambiguous_stop_first", idx
+        if hit_stop:
+            return -1.0, "stop_loss", idx
+        if hit_take_profit:
+            return label_config.take_profit_atr / label_config.stop_loss_atr, "take_profit", idx
+    exit_bid = float(prices.iloc[end_index]["close"]) - spread / 2.0
+    return (exit_bid - entry_ask) / (label_config.stop_loss_atr * atr), "vertical", end_index
 
 
 def summarize_r(outcomes: list[float] | np.ndarray) -> dict[str, Any]:
