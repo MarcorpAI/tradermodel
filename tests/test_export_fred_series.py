@@ -44,3 +44,18 @@ def test_fetch_yahoo_tnx_normalizes_chart_response(monkeypatch):
 
     assert frame["close"].tolist() == [4.0, 4.2]
     assert frame["instrument"].unique().tolist() == ["DGS10"]
+
+
+def test_normalize_calcfi_csv_reads_date_value_schema():
+    raw = pd.DataFrame(
+        {
+            "date": ["2024-01-01", "2024-01-02"],
+            "value": [4.0, 4.2],
+            "source": ["FRED", "FRED"],
+        }
+    )
+
+    frame = export_fred_series.normalize_calcfi_csv(raw, years=100)
+
+    assert frame["close"].tolist() == [4.0, 4.2]
+    assert frame["instrument"].unique().tolist() == ["DGS10"]
