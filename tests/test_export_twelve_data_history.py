@@ -36,6 +36,12 @@ def test_parse_values_normalizes_rows_to_training_schema():
     ]
 
 
+def test_parse_values_returns_empty_rows_for_no_data_window():
+    payload = {"status": "error", "message": "No data is available for the requested period"}
+
+    assert exporter.parse_values(payload, "UUP", "15min") == []
+
+
 def test_expected_minutes_from_granularity():
     assert exporter.expected_minutes_from_granularity("15min") == 15
     assert exporter.expected_minutes_from_granularity("1h") == 60

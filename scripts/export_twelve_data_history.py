@@ -16,6 +16,9 @@ from xauusd_signal.config import load_settings
 BASE_URL = "https://api.twelvedata.com/time_series"
 
 
+NO_DATA_MARKERS = ("no data", "not available", "not found")
+
+
 def parse_twelve_datetime(value: str) -> datetime:
     parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if parsed.tzinfo is None:
@@ -25,7 +28,10 @@ def parse_twelve_datetime(value: str) -> datetime:
 
 def parse_values(payload: dict[str, Any], symbol: str, interval: str) -> list[dict[str, Any]]:
     if payload.get("status") == "error":
-        raise RuntimeError(payload.get("message", "Twelve Data API error"))
+        message = payload.get("message", "Twelve Data API error")
+        if is_no_data_message(message):
+            return []
+        raise RuntimeError(message)
     values = payload.get("values", [])
     rows: list[dict[str, Any]] = []
     for item in values:
@@ -42,6 +48,11 @@ def parse_values(payload: dict[str, Any], symbol: str, interval: str) -> list[di
             }
         )
     return rows
+
+
+def is_no_data_message(message: str) -> bool:
+    normalized = message.lower()
+    return any(marker in normalized for marker in NO_DATA_MARKERS)
 
 
 def load_existing(path: Path) -> dict[str, dict[str, Any]]:
@@ -85,8 +96,13 @@ def fetch_window(
         },
         timeout=30,
     )
-    response.raise_for_status()
-    return parse_values(response.json(), symbol, interval)
+    payload = response.json()
+    if response.status_code >= 400:
+        message = payload.get("message", response.text)
+        if is_no_data_message(message):
+            return []
+        response.raise_for_status()
+    return parse_values(payload, symbol, interval)
 
 
 def is_expected_market_closure(previous: datetime, current: datetime) -> bool:
@@ -178,6 +194,9 @@ def export_history(
     while cursor < final_end:
         window_end = min(cursor + timedelta(days=chunk_days), final_end)
         fetched = fetch_window(api_key, symbol, interval, cursor, window_end, timezone, outputsize)
+        if not fetched and window_end == final_end:
+            print(f"no_new_rows start={cursor.isoformat()} end={window_end.isoformat()}")
+            break
         for row in fetched:
             rows[row["timestamp"]] = row
         write_rows(output, rows)
