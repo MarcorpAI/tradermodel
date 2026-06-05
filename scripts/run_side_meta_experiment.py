@@ -201,20 +201,47 @@ def fmt(value: Any) -> str:
     return f"{float(value):.4f}"
 
 
+def select_side_threshold(
+    results: list[dict[str, Any]],
+    min_trades: int = 50,
+    min_precision: float = 0.55,
+    min_profit_factor: float = 1.1,
+) -> float | None:
+    if not results:
+        return None
+    thresholds = [row["threshold"] for row in results[-1]["thresholds"]]
+    for threshold in thresholds:
+        if all(
+            threshold_row_passes(metrics, threshold, min_trades, min_precision, min_profit_factor)
+            for metrics in results[-2:]
+        ):
+            return float(threshold)
+    return None
+
+
+def threshold_row_passes(
+    metrics: dict[str, Any],
+    threshold: float,
+    min_trades: int,
+    min_precision: float,
+    min_profit_factor: float,
+) -> bool:
+    row = [item for item in metrics["thresholds"] if item["threshold"] == threshold][0]
+    if row["trades"] < min_trades:
+        return False
+    if row["precision"] is None or row["precision"] < min_precision:
+        return False
+    if row["expected_r"] is None or row["expected_r"] <= 0:
+        return False
+    if row["profit_factor"] is None or row["profit_factor"] <= min_profit_factor:
+        return False
+    return True
+
+
 def side_passes(results: list[dict[str, Any]], threshold: float = 0.55) -> bool:
     if not results:
         return False
-    for metrics in results[-2:]:
-        row = [item for item in metrics["thresholds"] if item["threshold"] == threshold][0]
-        if row["trades"] < 50:
-            return False
-        if row["precision"] is None or row["precision"] < 0.55:
-            return False
-        if row["expected_r"] is None or row["expected_r"] <= 0:
-            return False
-        if row["profit_factor"] is None or row["profit_factor"] <= 1.1:
-            return False
-    return True
+    return all(threshold_row_passes(metrics, threshold, 50, 0.55, 1.1) for metrics in results[-2:])
 
 
 def main() -> None:
@@ -249,7 +276,11 @@ def main() -> None:
     for side in sides:
         data = side_dataset(labeled, side).dropna(subset=META_FEATURE_COLUMNS + ["meta_target", "event_r"]).reset_index(drop=True)
         results = run_side(data, side, args.folds, args.trials, args.min_train_size, args.embargo)
-        print(f"side={side} enabled={side_passes(results)}")
+        recommended_threshold = select_side_threshold(results)
+        print(
+            f"side={side} enabled={recommended_threshold is not None} "
+            f"recommended_threshold={fmt(recommended_threshold)}"
+        )
 
 
 if __name__ == "__main__":
