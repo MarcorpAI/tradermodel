@@ -51,6 +51,22 @@ def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     pd.DataFrame(rows).to_csv(path, index=False)
 
 
+def json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(json_safe(key)): json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [json_safe(item) for item in value]
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    if isinstance(value, np.ndarray):
+        return json_safe(value.tolist())
+    return value
+
+
 def run_execution_aware_side(
     side_df: pd.DataFrame,
     folds: int,
@@ -170,7 +186,7 @@ def main() -> None:
         "recent_fold_metrics": results[-2:],
     }
     args.report_dir.mkdir(parents=True, exist_ok=True)
-    (args.report_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str), encoding="utf-8")
+    (args.report_dir / "summary.json").write_text(json.dumps(json_safe(summary), indent=2, default=str), encoding="utf-8")
 
     if args.export_if_enabled and enabled:
         export_model = train_export_execution_model(data, args.trials, args.seed)

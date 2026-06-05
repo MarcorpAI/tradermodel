@@ -5,6 +5,7 @@ import pandas as pd
 
 from xauusd_signal.research.execution import ExecutionConfig, execution_aware_sell_labels, sell_execution_outcome
 from xauusd_signal.research.labels import TripleBarrierConfig
+from scripts.run_execution_aware_sell_experiment import json_safe
 
 
 def price_frame() -> pd.DataFrame:
@@ -60,3 +61,9 @@ def test_execution_aware_sell_labels_blocks_news_and_labels_trade():
     assert np.isnan(labeled["meta_target"].iloc[0])
     assert labeled["meta_target"].iloc[1] == 1
     assert labeled["event_r"].iloc[1] == 2.0
+
+
+def test_json_safe_converts_numpy_keys_and_values():
+    payload = {np.int64(0): np.int64(2), "nested": {np.int64(1): np.float64(0.5)}}
+
+    assert json_safe(payload) == {"0": 2, "nested": {"1": 0.5}}
