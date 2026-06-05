@@ -102,18 +102,20 @@ def test_side_passes_requires_last_two_folds_to_pass():
     assert not side_passes([passing, failing])
 
 
-def test_select_side_threshold_uses_passing_recent_threshold():
+def test_select_side_threshold_uses_best_passing_recent_threshold():
     fold_3 = {
         "thresholds": [
-            {"threshold": 0.55, "trades": 332, "precision": 0.5964, "expected_r": 0.1928, "profit_factor": 1.4776},
-            {"threshold": 0.60, "trades": 152, "precision": 0.5855, "expected_r": 0.1711, "profit_factor": 1.4127},
+            {"threshold": 0.50, "trades": 499, "precision": 0.5691, "expected_r": 0.1383, "profit_factor": 1.3209},
+            {"threshold": 0.55, "trades": 330, "precision": 0.5788, "expected_r": 0.1576, "profit_factor": 1.3741},
+            {"threshold": 0.60, "trades": 143, "precision": 0.5944, "expected_r": 0.1888, "profit_factor": 1.4655},
         ]
     }
     fold_4 = {
         "thresholds": [
-            {"threshold": 0.55, "trades": 278, "precision": 0.5288, "expected_r": 0.0576, "profit_factor": 1.1221},
-            {"threshold": 0.60, "trades": 69, "precision": 0.5797, "expected_r": 0.1594, "profit_factor": 1.3793},
+            {"threshold": 0.50, "trades": 390, "precision": 0.5513, "expected_r": 0.1026, "profit_factor": 1.2286},
+            {"threshold": 0.55, "trades": 274, "precision": 0.5584, "expected_r": 0.1168, "profit_factor": 1.2645},
+            {"threshold": 0.60, "trades": 47, "precision": 0.5745, "expected_r": 0.1489, "profit_factor": 1.3500},
         ]
     }
 
-    assert select_side_threshold([fold_3, fold_4]) == 0.60
+    assert select_side_threshold([fold_3, fold_4]) == 0.55

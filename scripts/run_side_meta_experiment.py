@@ -210,13 +210,24 @@ def select_side_threshold(
     if not results:
         return None
     thresholds = [row["threshold"] for row in results[-1]["thresholds"]]
+    passing_thresholds: list[tuple[float, float, float, float]] = []
     for threshold in thresholds:
         if all(
             threshold_row_passes(metrics, threshold, min_trades, min_precision, min_profit_factor)
             for metrics in results[-2:]
         ):
-            return float(threshold)
-    return None
+            recent_rows = [threshold_row(metrics, threshold) for metrics in results[-2:]]
+            avg_expected_r = float(np.mean([row["expected_r"] for row in recent_rows]))
+            avg_precision = float(np.mean([row["precision"] for row in recent_rows]))
+            avg_profit_factor = float(np.mean([row["profit_factor"] for row in recent_rows]))
+            passing_thresholds.append((avg_expected_r, avg_precision, avg_profit_factor, float(threshold)))
+    if not passing_thresholds:
+        return None
+    return max(passing_thresholds)[3]
+
+
+def threshold_row(metrics: dict[str, Any], threshold: float) -> dict[str, Any]:
+    return [item for item in metrics["thresholds"] if item["threshold"] == threshold][0]
 
 
 def threshold_row_passes(
@@ -226,7 +237,7 @@ def threshold_row_passes(
     min_precision: float,
     min_profit_factor: float,
 ) -> bool:
-    row = [item for item in metrics["thresholds"] if item["threshold"] == threshold][0]
+    row = threshold_row(metrics, threshold)
     if row["trades"] < min_trades:
         return False
     if row["precision"] is None or row["precision"] < min_precision:
