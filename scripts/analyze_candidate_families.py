@@ -120,6 +120,16 @@ def main() -> None:
         "by_family_side_dxy": ["candidate_family", "side", "dxy_state"],
         "by_family_side_atr": ["candidate_family", "side", "atr_bucket"],
         "by_family_side_year": ["candidate_family", "side", "year"],
+        "by_family_side_session_dxy": ["candidate_family", "side", "session_name", "dxy_state"],
+        "by_family_side_session_atr": ["candidate_family", "side", "session_name", "atr_bucket"],
+        "by_family_side_session_h4_dxy": [
+            "candidate_family",
+            "side",
+            "session_name",
+            "h4_trend",
+            "h4_strength_bucket",
+            "dxy_state",
+        ],
     }
     args.report_dir.mkdir(parents=True, exist_ok=True)
     reports: dict[str, list[dict[str, Any]]] = {}
