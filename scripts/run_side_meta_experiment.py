@@ -37,7 +37,7 @@ REGIME_COLUMNS = [
 META_FEATURE_COLUMNS = FEATURE_COLUMNS + REGIME_COLUMNS
 
 
-def train_side_model(train_df: pd.DataFrame, valid_df: pd.DataFrame, trials: int) -> XGBClassifier:
+def train_side_model(train_df: pd.DataFrame, valid_df: pd.DataFrame, trials: int, seed: int) -> XGBClassifier:
     x_train = train_df[META_FEATURE_COLUMNS]
     y_train = train_df["meta_target"].astype(int)
     x_valid = valid_df[META_FEATURE_COLUMNS]
@@ -56,19 +56,19 @@ def train_side_model(train_df: pd.DataFrame, valid_df: pd.DataFrame, trials: int
             reg_lambda=trial.suggest_categorical("reg_lambda", [1, 1.5, 2.0]),
             scale_pos_weight=scale_pos_weight,
             eval_metric="logloss",
-            random_state=42,
+            random_state=seed,
         )
         model.fit(x_train, y_train)
         probabilities = model.predict_proba(x_valid)[:, 1]
         return precision_at_threshold(y_valid.to_numpy(), probabilities, 0.55)
 
-    study = optuna.create_study(direction="maximize")
+    study = optuna.create_study(direction="maximize", sampler=optuna.samplers.TPESampler(seed=seed))
     study.optimize(objective, n_trials=trials)
     model = XGBClassifier(
         **study.best_params,
         scale_pos_weight=scale_pos_weight,
         eval_metric="logloss",
-        random_state=42,
+        random_state=seed,
     )
     model.fit(x_train, y_train)
     return model
@@ -118,7 +118,7 @@ def threshold_metrics(y_true: np.ndarray, probabilities: np.ndarray, event_r: np
     }
 
 
-def run_side(side_df: pd.DataFrame, side: str, folds: int, trials: int, min_train_size: int | None, embargo: int) -> list[dict[str, Any]]:
+def run_side(side_df: pd.DataFrame, side: str, folds: int, trials: int, min_train_size: int | None, embargo: int, seed: int) -> list[dict[str, Any]]:
     splits = purged_candidate_walk_forward_splits(side_df, n_splits=folds, min_train_size=min_train_size, embargo=embargo)
     results = []
     for split in splits:
@@ -132,7 +132,7 @@ def run_side(side_df: pd.DataFrame, side: str, folds: int, trials: int, min_trai
             f"test_start={test_df['timestamp'].iloc[0]} test_end={test_df['timestamp'].iloc[-1]} "
             f"train_positive={int(train_df['meta_target'].sum())} test_positive={int(test_df['meta_target'].sum())}"
         )
-        model = train_side_model(fold_train, fold_valid, trials)
+        model = train_side_model(fold_train, fold_valid, trials, seed + split.fold)
         probabilities = model.predict_proba(test_df[META_FEATURE_COLUMNS])[:, 1]
         metrics = evaluate_side(test_df["meta_target"].astype(int), probabilities, test_df["event_r"])
         print_side_metrics(side, split.fold, metrics)
@@ -270,6 +270,7 @@ def main() -> None:
     parser.add_argument("--embargo", type=int, default=8)
     parser.add_argument("--side", choices=["BUY", "SELL", "both"], default="both")
     parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
     frame = build_training_features(load_csv(args.m15), load_csv(args.h1), load_csv(args.h4), load_csv(args.dxy), 0.0).dropna(subset=FEATURE_COLUMNS)
@@ -286,7 +287,7 @@ def main() -> None:
     sides = ["BUY", "SELL"] if args.side == "both" else [args.side]
     for side in sides:
         data = side_dataset(labeled, side).dropna(subset=META_FEATURE_COLUMNS + ["meta_target", "event_r"]).reset_index(drop=True)
-        results = run_side(data, side, args.folds, args.trials, args.min_train_size, args.embargo)
+        results = run_side(data, side, args.folds, args.trials, args.min_train_size, args.embargo, args.seed)
         recommended_threshold = select_side_threshold(results)
         print(
             f"side={side} enabled={recommended_threshold is not None} "
