@@ -3,7 +3,19 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from scripts.run_side_meta_experiment import purged_candidate_walk_forward_splits, select_side_threshold, side_passes
+import joblib
+
+from scripts.run_side_meta_experiment import (
+    add_real_macro_features,
+    export_side_artifact,
+    load_us10y_csv,
+    purged_candidate_walk_forward_splits,
+    select_side_threshold,
+    side_passes,
+    threshold_metrics,
+    validate_real_dxy_frame,
+)
+from scripts.run_side_meta_experiment import META_FEATURE_COLUMNS
 from xauusd_signal.research.candidates import CandidateConfig, generate_side_candidates
 from xauusd_signal.research.labels import TripleBarrierConfig
 from xauusd_signal.research.meta_labels import meta_label_candidates
@@ -119,3 +131,82 @@ def test_select_side_threshold_uses_best_passing_recent_threshold():
     }
 
     assert select_side_threshold([fold_3, fold_4]) == 0.55
+
+
+def test_export_side_artifact_writes_bundle(tmp_path):
+    output = tmp_path / "sell_meta.pkl"
+    model = object()
+    results = [{"thresholds": []}, {"thresholds": []}]
+
+    export_side_artifact(
+        output,
+        model,
+        "SELL",
+        0.65,
+        TripleBarrierConfig(2.0, 1.0, 8),
+        CandidateConfig(),
+        results,
+        42,
+    )
+
+    artifact = joblib.load(output)
+    assert artifact["artifact_type"] == "side_meta_xgboost"
+    assert artifact["side"] == "SELL"
+    assert artifact["threshold"] == 0.65
+    assert artifact["feature_columns"] == META_FEATURE_COLUMNS
+    assert artifact["label_config"]["take_profit_atr"] == 2.0
+
+
+def test_validate_real_dxy_frame_rejects_eurusd_proxy(tmp_path):
+    frame = pd.DataFrame({"instrument": ["EUR/USD"], "timestamp": [pd.Timestamp("2024-01-01", tz="UTC")]})
+
+    try:
+        validate_real_dxy_frame(frame, tmp_path / "eurusd_m15.csv")
+    except ValueError as exc:
+        assert "not EURUSD proxy" in str(exc)
+    else:
+        raise AssertionError("Expected EURUSD proxy validation failure")
+
+
+def test_load_us10y_csv_accepts_fred_schema(tmp_path):
+    path = tmp_path / "us10y.csv"
+    pd.DataFrame({"DATE": ["2024-01-01", "2024-01-02", "2024-01-03"], "DGS10": ["4.0", ".", "4.2"]}).to_csv(path, index=False)
+
+    frame = load_us10y_csv(path)
+
+    assert frame["us10y_yield"].tolist() == [4.0, 4.2]
+
+
+def test_add_real_macro_features_adds_sell_regime_block():
+    timestamps = pd.date_range("2024-01-01", periods=100, freq="15min", tz="UTC")
+    base = pd.DataFrame({"timestamp": timestamps, "close": np.linspace(100, 110, 100)})
+    dxy = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "close": np.r_[np.linspace(105, 100, 60), np.linspace(100, 99, 40)],
+        }
+    )
+    us10y = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2023-12-01", periods=40, freq="1D", tz="UTC"),
+            "us10y_yield": np.linspace(4.0, 4.5, 40),
+        }
+    )
+
+    frame = add_real_macro_features(base, dxy, us10y).dropna()
+
+    assert {"real_dxy_return_20", "us10y_change_10d", "sell_regime_block"}.issubset(frame.columns)
+    assert frame["sell_regime_block"].isin([0, 1]).all()
+
+
+def test_threshold_metrics_counts_regime_blocked_trades():
+    metrics = threshold_metrics(
+        np.array([1, 1, 0]),
+        np.array([0.7, 0.8, 0.9]),
+        np.array([2.0, 2.0, -1.0]),
+        0.65,
+        np.array([True, False, True]),
+    )
+
+    assert metrics["trades"] == 2
+    assert metrics["blocked"] == 1

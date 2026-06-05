@@ -29,6 +29,7 @@ def main() -> None:
         (training["symbol"], "15min", args.output_dir / "xauusd_m15.csv", 30),
         (training["symbol"], "1h", args.output_dir / "xauusd_h1.csv", 90),
         (training["symbol"], "4h", args.output_dir / "xauusd_h4.csv", 180),
+        (training.get("dxy_symbol", "DXY"), "15min", args.output_dir / "dxy_m15.csv", 30),
         (training["dxy_proxy_symbol"], "15min", args.output_dir / "eurusd_m15.csv", 30),
     ]
     for symbol, interval, output, chunk_days in jobs:
@@ -50,4 +51,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

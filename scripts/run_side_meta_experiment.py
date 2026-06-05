@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+import joblib
 import numpy as np
 import optuna
 import pandas as pd
@@ -34,7 +36,17 @@ REGIME_COLUMNS = [
     "dxy_weak",
     "dxy_strong",
 ]
-META_FEATURE_COLUMNS = FEATURE_COLUMNS + REGIME_COLUMNS
+MACRO_FEATURE_COLUMNS = [
+    "real_dxy_return_20",
+    "real_dxy_return_80",
+    "real_dxy_above_ema_50",
+    "us10y_yield",
+    "us10y_change_10d",
+    "us10y_change_20d",
+    "us10y_rising_fast_10d",
+    "sell_regime_block",
+]
+META_FEATURE_COLUMNS = FEATURE_COLUMNS + REGIME_COLUMNS + MACRO_FEATURE_COLUMNS
 
 
 def train_side_model(train_df: pd.DataFrame, valid_df: pd.DataFrame, trials: int, seed: int) -> XGBClassifier:
@@ -81,13 +93,74 @@ def precision_at_threshold(y_true: np.ndarray, probabilities: np.ndarray, thresh
     return float((y_true[mask] == 1).mean())
 
 
-def evaluate_side(y_true: pd.Series, probabilities: np.ndarray, event_r: pd.Series) -> dict[str, Any]:
+def validate_real_dxy_frame(frame: pd.DataFrame, path: Path) -> None:
+    if frame.empty:
+        raise ValueError(f"DXY file is empty: {path}")
+    if "instrument" in frame.columns:
+        instruments = {str(value).upper() for value in frame["instrument"].dropna().unique()}
+        if any("EUR" in value for value in instruments):
+            raise ValueError(f"--dxy must be real DXY data, not EURUSD proxy: {path}")
+
+
+def load_us10y_csv(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"US10Y file is required for side-meta v2: {path}")
+    raw = pd.read_csv(path)
+    date_column = "timestamp" if "timestamp" in raw.columns else "DATE" if "DATE" in raw.columns else None
+    if date_column is None:
+        raise ValueError("US10Y CSV must include timestamp or DATE column")
+    value_column = "close" if "close" in raw.columns else "DGS10" if "DGS10" in raw.columns else None
+    if value_column is None:
+        raise ValueError("US10Y CSV must include close or DGS10 column")
+    output = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(raw[date_column], utc=True),
+            "us10y_yield": pd.to_numeric(raw[value_column].replace(".", pd.NA), errors="coerce"),
+        }
+    )
+    return output.dropna().sort_values("timestamp").reset_index(drop=True)
+
+
+def add_real_macro_features(frame: pd.DataFrame, real_dxy_frame: pd.DataFrame, us10y_frame: pd.DataFrame) -> pd.DataFrame:
+    output = frame.sort_values("timestamp").copy()
+    dxy = real_dxy_frame.sort_values("timestamp").copy()
+    dxy["timestamp"] = pd.to_datetime(dxy["timestamp"], utc=True)
+    dxy["real_dxy_return_20"] = dxy["close"].pct_change(20)
+    dxy["real_dxy_return_80"] = dxy["close"].pct_change(80)
+    dxy["real_dxy_ema_50"] = dxy["close"].ewm(span=50, adjust=False).mean()
+    dxy["real_dxy_above_ema_50"] = (dxy["close"] > dxy["real_dxy_ema_50"]).astype(int)
+    dxy_context = dxy[["timestamp", "real_dxy_return_20", "real_dxy_return_80", "real_dxy_above_ema_50"]].dropna()
+
+    us10y = us10y_frame.sort_values("timestamp").copy()
+    us10y["timestamp"] = pd.to_datetime(us10y["timestamp"], utc=True)
+    us10y["us10y_change_10d"] = us10y["us10y_yield"] - us10y["us10y_yield"].shift(10)
+    us10y["us10y_change_20d"] = us10y["us10y_yield"] - us10y["us10y_yield"].shift(20)
+    us10y["us10y_rising_fast_10d"] = (us10y["us10y_change_10d"] >= 0.20).astype(int)
+    us10y_context = us10y[["timestamp", "us10y_yield", "us10y_change_10d", "us10y_change_20d", "us10y_rising_fast_10d"]].dropna()
+
+    output = pd.merge_asof(output, dxy_context, on="timestamp", direction="backward")
+    output = pd.merge_asof(output, us10y_context, on="timestamp", direction="backward")
+    output["sell_regime_block"] = (
+        output["us10y_rising_fast_10d"].eq(1)
+        | output["real_dxy_return_20"].lt(-0.01)
+        | output["real_dxy_above_ema_50"].eq(0)
+    ).astype(int)
+    return output
+
+
+def evaluate_side(
+    y_true: pd.Series,
+    probabilities: np.ndarray,
+    event_r: pd.Series,
+    gate_pass: pd.Series | None = None,
+) -> dict[str, Any]:
     predictions = (probabilities >= 0.5).astype(int)
     try:
         roc_auc = float(roc_auc_score(y_true.astype(int), probabilities))
     except ValueError:
         roc_auc = float("nan")
-    rows = [threshold_metrics(y_true.to_numpy().astype(int), probabilities, event_r.to_numpy(), t) for t in [0.50, 0.55, 0.60, 0.65, 0.70]]
+    gate = gate_pass.to_numpy().astype(bool) if gate_pass is not None else None
+    rows = [threshold_metrics(y_true.to_numpy().astype(int), probabilities, event_r.to_numpy(), t, gate) for t in [0.50, 0.55, 0.60, 0.65, 0.70]]
     return {
         "roc_auc": roc_auc,
         "classification_report": classification_report(y_true, predictions, zero_division=0, output_dict=True),
@@ -97,10 +170,26 @@ def evaluate_side(y_true: pd.Series, probabilities: np.ndarray, event_r: pd.Seri
     }
 
 
-def threshold_metrics(y_true: np.ndarray, probabilities: np.ndarray, event_r: np.ndarray, threshold: float) -> dict[str, Any]:
-    mask = probabilities >= threshold
+def threshold_metrics(
+    y_true: np.ndarray,
+    probabilities: np.ndarray,
+    event_r: np.ndarray,
+    threshold: float,
+    gate_pass: np.ndarray | None = None,
+) -> dict[str, Any]:
+    confidence_mask = probabilities >= threshold
+    mask = confidence_mask if gate_pass is None else confidence_mask & gate_pass
     if not mask.any():
-        return {"threshold": threshold, "coverage": 0.0, "trades": 0, "precision": None, "expected_r": None, "profit_factor": None, "max_drawdown_r": None}
+        return {
+            "threshold": threshold,
+            "coverage": 0.0,
+            "trades": 0,
+            "blocked": int(confidence_mask.sum() - mask.sum()),
+            "precision": None,
+            "expected_r": None,
+            "profit_factor": None,
+            "max_drawdown_r": None,
+        }
     selected_y = y_true[mask]
     selected_r = event_r[mask]
     wins = selected_y == 1
@@ -111,6 +200,7 @@ def threshold_metrics(y_true: np.ndarray, probabilities: np.ndarray, event_r: np
         "threshold": threshold,
         "coverage": float(mask.mean()),
         "trades": int(mask.sum()),
+        "blocked": int(confidence_mask.sum() - mask.sum()),
         "precision": float(wins.mean()),
         "expected_r": float(np.mean(signed_r)),
         "profit_factor": float(gains / losses) if losses else None,
@@ -134,10 +224,45 @@ def run_side(side_df: pd.DataFrame, side: str, folds: int, trials: int, min_trai
         )
         model = train_side_model(fold_train, fold_valid, trials, seed + split.fold)
         probabilities = model.predict_proba(test_df[META_FEATURE_COLUMNS])[:, 1]
-        metrics = evaluate_side(test_df["meta_target"].astype(int), probabilities, test_df["event_r"])
+        gate_pass = ~test_df["sell_regime_block"].astype(bool) if side == "SELL" else pd.Series(True, index=test_df.index)
+        metrics = evaluate_side(test_df["meta_target"].astype(int), probabilities, test_df["event_r"], gate_pass)
         print_side_metrics(side, split.fold, metrics)
         results.append(metrics)
     return results
+
+
+def train_export_model(side_df: pd.DataFrame, trials: int, seed: int) -> XGBClassifier:
+    valid_cut = int(len(side_df) * 0.85)
+    train_df = side_df.iloc[:valid_cut].copy()
+    valid_df = side_df.iloc[valid_cut:].copy()
+    if len(train_df) == 0 or len(valid_df) == 0:
+        raise ValueError("Not enough rows to train export model")
+    return train_side_model(train_df, valid_df, trials, seed)
+
+
+def export_side_artifact(
+    output_path: Path,
+    model: XGBClassifier,
+    side: str,
+    threshold: float,
+    label_config: TripleBarrierConfig,
+    candidate_config: CandidateConfig,
+    results: list[dict[str, Any]],
+    seed: int,
+) -> None:
+    artifact = {
+        "artifact_type": "side_meta_xgboost",
+        "side": side,
+        "threshold": threshold,
+        "model": model,
+        "feature_columns": META_FEATURE_COLUMNS,
+        "label_config": asdict(label_config),
+        "candidate_config": asdict(candidate_config),
+        "seed": seed,
+        "recent_fold_metrics": results[-2:],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(artifact, output_path)
 
 
 def purged_candidate_walk_forward_splits(
@@ -188,7 +313,7 @@ def print_side_metrics(side: str, fold: int, metrics: dict[str, Any]) -> None:
     for row in metrics["thresholds"]:
         print(
             f"side={side} threshold={row['threshold']:.2f} coverage={row['coverage']:.3f} "
-            f"trades={row['trades']} precision={fmt(row['precision'])} expected_r={fmt(row['expected_r'])} "
+            f"trades={row['trades']} blocked={row['blocked']} precision={fmt(row['precision'])} expected_r={fmt(row['expected_r'])} "
             f"profit_factor={fmt(row['profit_factor'])} max_dd_r={fmt(row['max_drawdown_r'])}"
         )
 
@@ -260,7 +385,8 @@ def main() -> None:
     parser.add_argument("--m15", type=Path, default=Path("data/training/xauusd_m15.csv"))
     parser.add_argument("--h1", type=Path, default=Path("data/training/xauusd_h1.csv"))
     parser.add_argument("--h4", type=Path, default=Path("data/training/xauusd_h4.csv"))
-    parser.add_argument("--dxy", type=Path, default=Path("data/training/eurusd_m15.csv"))
+    parser.add_argument("--dxy", type=Path, default=Path("data/training/dxy_m15.csv"))
+    parser.add_argument("--us10y", type=Path, default=Path("data/training/us10y_daily.csv"))
     parser.add_argument("--tp-atr", type=float, default=2.0)
     parser.add_argument("--sl-atr", type=float, default=1.0)
     parser.add_argument("--vertical", type=int, default=8)
@@ -271,16 +397,26 @@ def main() -> None:
     parser.add_argument("--side", choices=["BUY", "SELL", "both"], default="both")
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--output", type=Path, default=Path("models/sell_meta_xgb.pkl"))
+    parser.add_argument("--export-if-enabled", action="store_true")
     args = parser.parse_args()
 
-    frame = build_training_features(load_csv(args.m15), load_csv(args.h1), load_csv(args.h4), load_csv(args.dxy), 0.0).dropna(subset=FEATURE_COLUMNS)
+    if not args.dxy.exists():
+        raise SystemExit(f"Real DXY file is required for side-meta v2: {args.dxy}")
+    dxy_frame = load_csv(args.dxy)
+    validate_real_dxy_frame(dxy_frame, args.dxy)
+    us10y_frame = load_us10y_csv(args.us10y)
+    frame = build_training_features(load_csv(args.m15), load_csv(args.h1), load_csv(args.h4), dxy_frame, 0.0).dropna(subset=FEATURE_COLUMNS)
+    frame = add_real_macro_features(frame, dxy_frame, us10y_frame)
     frame = frame.reset_index(drop=True)
     frame["source_index"] = frame.index
     if args.max_rows:
         frame = frame.tail(args.max_rows).reset_index(drop=True)
         frame["source_index"] = frame.index
-    candidates = generate_side_candidates(frame, CandidateConfig())
-    labeled = meta_label_candidates(candidates, frame, TripleBarrierConfig(args.tp_atr, args.sl_atr, args.vertical))
+    candidate_config = CandidateConfig()
+    label_config = TripleBarrierConfig(args.tp_atr, args.sl_atr, args.vertical)
+    candidates = generate_side_candidates(frame, candidate_config)
+    labeled = meta_label_candidates(candidates, frame, label_config)
     print(f"candidate_counts={labeled['side'].value_counts().to_dict()}")
     print(f"positive_rates={labeled.groupby('side')['meta_target'].mean().round(4).to_dict()}")
 
@@ -293,6 +429,24 @@ def main() -> None:
             f"side={side} enabled={recommended_threshold is not None} "
             f"recommended_threshold={fmt(recommended_threshold)}"
         )
+        if args.export_if_enabled and recommended_threshold is not None:
+            export_model = train_export_model(data, args.trials, args.seed)
+            output_path = args.output
+            if args.side == "both":
+                output_path = output_path.with_name(f"{side.lower()}_{output_path.name}")
+            export_side_artifact(
+                output_path,
+                export_model,
+                side,
+                recommended_threshold,
+                label_config,
+                candidate_config,
+                results,
+                args.seed,
+            )
+            print(f"side={side} exported={output_path}")
+        elif args.export_if_enabled:
+            print(f"side={side} export_skipped=disabled")
 
 
 if __name__ == "__main__":

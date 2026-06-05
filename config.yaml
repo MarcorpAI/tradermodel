@@ -14,6 +14,7 @@ deriv:
 training_data:
   provider: twelve_data
   symbol: XAU/USD
+  dxy_symbol: DXY
   dxy_proxy_symbol: EUR/USD
   interval: 15min
   years: 5
