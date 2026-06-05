@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from xauusd_signal.domain import Candle
-from xauusd_signal.feature_engine import FEATURE_COLUMNS, build_feature_frame, latest_features, session_name
+from xauusd_signal.feature_engine import FEATURE_COLUMNS, build_feature_frame, feature_matrix, latest_features, session_name
 
 
 def candles(count: int, granularity: str = "M15", start: datetime | None = None) -> list[Candle]:
@@ -43,3 +43,17 @@ def test_build_feature_frame_has_latest_complete_features():
     assert row["sentiment_score"] == 0.4
     assert session_name(row) in {"Asian", "London", "New York", "London/NY Overlap", "Off Session"}
 
+
+def test_feature_matrix_can_use_model_specific_columns():
+    frame = build_feature_frame(
+        candles(240),
+        candles(80, "H1"),
+        candles(80, "H4"),
+        candles(240, "M15"),
+        sentiment_score=0.4,
+    )
+    row = latest_features(frame, ["rsi_14", "sentiment_score"])
+
+    matrix = feature_matrix(row, ["sentiment_score", "rsi_14"])
+
+    assert list(matrix.columns) == ["sentiment_score", "rsi_14"]

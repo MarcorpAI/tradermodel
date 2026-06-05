@@ -10,6 +10,13 @@ from .storage import Storage
 def build_risk_plan(row, direction: str, config: dict[str, Any]) -> dict[str, Any]:
     entry = float(row["close"])
     atr = float(row["atr_14"])
+    if direction == "HOLD":
+        return {
+            "entry_zone": f"{entry:.2f}-{entry:.2f}",
+            "stop_loss": round(entry, 2),
+            "take_profit": round(entry, 2),
+            "rr_ratio": 0.0,
+        }
     sl_mult = float(config["atr_sl_multiplier"])
     tp_mult = float(config["atr_tp_multiplier"])
     if direction == "BUY":
@@ -59,4 +66,3 @@ class RiskFilter:
         if self.storage.daily_drawdown_r(now.astimezone(UTC).date()) >= float(self.config["daily_drawdown_limit_r"]):
             return RiskDecision(False, "daily drawdown limit reached")
         return RiskDecision(True)
-

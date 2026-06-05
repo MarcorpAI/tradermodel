@@ -52,6 +52,14 @@ def test_build_risk_plan_buy_uses_atr_multipliers():
     assert plan["rr_ratio"] == 1.5
 
 
+def test_build_risk_plan_hold_is_neutral():
+    plan = build_risk_plan({"close": 2300.0, "atr_14": 10.0}, "HOLD", config())
+    assert plan["entry_zone"] == "2300.00-2300.00"
+    assert plan["stop_loss"] == 2300.0
+    assert plan["take_profit"] == 2300.0
+    assert plan["rr_ratio"] == 0.0
+
+
 def test_risk_rejects_low_confidence(tmp_path):
     storage = Storage(tmp_path / "test.db")
     storage.initialize()
@@ -74,4 +82,3 @@ def test_risk_rejects_news_blackout(tmp_path):
     )
     assert not decision.accepted
     assert "news" in decision.reject_reason
-

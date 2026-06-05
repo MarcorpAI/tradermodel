@@ -20,8 +20,20 @@ class ModelInference:
             self._model = joblib.load(self.model_path)
         return self._model
 
+    def feature_columns(self) -> list[str] | None:
+        artifact = self.load()
+        if isinstance(artifact, dict) and artifact.get("artifact_type") == "side_meta_xgboost":
+            columns = artifact.get("feature_columns")
+            if not columns:
+                raise ValueError("Side-meta artifact is missing feature_columns")
+            return list(columns)
+        return None
+
     def predict(self, features: pd.DataFrame) -> ModelPrediction:
-        model = self.load()
+        artifact = self.load()
+        if isinstance(artifact, dict) and artifact.get("artifact_type") == "side_meta_xgboost":
+            return self._predict_side_meta_artifact(artifact, features)
+        model = artifact
         probabilities = model.predict_proba(features)[0]
         classes = list(getattr(model, "classes_", [0, 1]))
         if 2 in classes:
@@ -45,3 +57,24 @@ class ModelInference:
         buy_probability = float(probabilities[buy_idx])
         direction = "BUY" if buy_probability >= sell_probability else "SELL"
         return ModelPrediction(direction=direction, buy_probability=buy_probability, sell_probability=sell_probability)
+
+    def _predict_side_meta_artifact(self, artifact: dict, features: pd.DataFrame) -> ModelPrediction:
+        side = artifact.get("side")
+        if side != "SELL":
+            raise ValueError(f"Unsupported side-meta artifact side: {side}")
+        feature_columns = artifact.get("feature_columns")
+        if not feature_columns:
+            raise ValueError("Side-meta artifact is missing feature_columns")
+        missing = [column for column in feature_columns if column not in features.columns]
+        if missing:
+            raise ValueError(f"Missing model features: {missing}")
+
+        if "sell_regime_block" in features.columns and bool(features["sell_regime_block"].iloc[0]):
+            return ModelPrediction(direction="HOLD", buy_probability=0.0, sell_probability=0.0)
+
+        model = artifact["model"]
+        probability = float(model.predict_proba(features[feature_columns])[0][1])
+        threshold = float(artifact["threshold"])
+        if probability >= threshold:
+            return ModelPrediction(direction="SELL", buy_probability=0.0, sell_probability=probability)
+        return ModelPrediction(direction="HOLD", buy_probability=0.0, sell_probability=probability)

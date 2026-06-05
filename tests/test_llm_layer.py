@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 from xauusd_signal.domain import ModelPrediction
-from xauusd_signal.llm_layer import parse_llm_response, validate_llm_response
+from xauusd_signal.llm_layer import parse_confidence, parse_llm_response, validate_llm_response
 
 
 def test_parse_llm_response_strips_markdown():
     parsed = parse_llm_response('```json\n{"signal":"BUY","confidence":70}\n```')
     assert parsed["signal"] == "BUY"
+
+
+def test_parse_confidence_accepts_decimal_probability_and_percent_string():
+    assert parse_confidence(0.6155) == 62
+    assert parse_confidence("61.55%") == 62
+    assert parse_confidence("62") == 62
 
 
 def test_validate_llm_response_keeps_python_risk_math_and_blocks_direction_flip():
@@ -34,4 +40,3 @@ def test_validate_llm_response_keeps_python_risk_math_and_blocks_direction_flip(
     assert payload["confidence"] == 72
     assert payload["stop_loss"] == 2290.0
     assert payload["rr_ratio"] == 1.5
-

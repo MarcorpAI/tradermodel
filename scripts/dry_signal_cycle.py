@@ -4,7 +4,9 @@ from datetime import UTC, datetime
 
 from xauusd_signal.config import load_settings
 from xauusd_signal.data_ingest import build_market_data_client, is_candle_fresh, latest_complete_candle
+from xauusd_signal.app import enrich_model_features
 from xauusd_signal.feature_engine import FEATURE_COLUMNS, build_feature_frame, latest_features, session_name
+from xauusd_signal.model_inference import ModelInference
 from xauusd_signal.sentiment import fetch_sentiment
 from xauusd_signal.storage import Storage
 
@@ -39,9 +41,13 @@ def main() -> None:
     except Exception:
         sentiment_score = 0.0
 
+    model = ModelInference(settings.model_path)
+    model_columns = model.feature_columns()
     frame = build_feature_frame(m15, h1, h4, dxy, sentiment_score)
-    row = latest_features(frame)
-    missing = [column for column in FEATURE_COLUMNS if column not in row or row[column] != row[column]]
+    frame = enrich_model_features(frame, settings)
+    row = latest_features(frame, model_columns)
+    required_columns = model_columns or FEATURE_COLUMNS
+    missing = [column for column in required_columns if column not in row or row[column] != row[column]]
 
     print(
         "latest_m15="
@@ -68,4 +74,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -104,15 +104,17 @@ def build_feature_frame(
     return df
 
 
-def latest_features(frame: pd.DataFrame) -> pd.Series:
-    ready = frame.dropna(subset=FEATURE_COLUMNS)
+def latest_features(frame: pd.DataFrame, columns: list[str] | None = None) -> pd.Series:
+    required = columns or FEATURE_COLUMNS
+    ready = frame.dropna(subset=required)
     if ready.empty:
         raise RuntimeError("Not enough candle history to compute all features")
     return ready.iloc[-1]
 
 
-def feature_matrix(row: pd.Series) -> pd.DataFrame:
-    return pd.DataFrame([{column: row[column] for column in FEATURE_COLUMNS}])
+def feature_matrix(row: pd.Series, columns: list[str] | None = None) -> pd.DataFrame:
+    selected = columns or FEATURE_COLUMNS
+    return pd.DataFrame([{column: row[column] for column in selected}])
 
 
 def rsi(series: pd.Series, period: int) -> pd.Series:
@@ -164,4 +166,3 @@ def session_name(row: pd.Series) -> str:
     if int(row["session_asian"]) == 1:
         return "Asian"
     return "Off Session"
-

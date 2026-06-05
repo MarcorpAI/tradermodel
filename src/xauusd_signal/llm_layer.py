@@ -103,7 +103,7 @@ def validate_llm_response(payload: dict[str, Any], prediction: ModelPrediction, 
         raise ValueError("invalid signal")
     if signal not in {"HOLD", prediction.direction}:
         signal = "HOLD"
-    confidence = int(payload.get("confidence", 0))
+    confidence = parse_confidence(payload.get("confidence", 0))
     confidence = max(0, min(confidence, prediction.confidence))
     payload["signal"] = signal
     payload["confidence"] = confidence
@@ -113,6 +113,22 @@ def validate_llm_response(payload: dict[str, Any], prediction: ModelPrediction, 
     payload["rr_ratio"] = risk_plan["rr_ratio"]
     payload["rationale"] = str(payload.get("rationale", "")).strip()[:600] or "No rationale supplied."
     return payload
+
+
+def parse_confidence(value: Any) -> int:
+    if isinstance(value, str):
+        match = re.search(r"-?\d+(?:\.\d+)?", value)
+        if not match:
+            return 0
+        numeric = float(match.group(0))
+    else:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return 0
+    if 0 < numeric <= 1:
+        numeric *= 100
+    return int(round(numeric))
 
 
 def signal_from_review(row, prediction: ModelPrediction, review: dict[str, Any]) -> Signal:
@@ -128,4 +144,3 @@ def signal_from_review(row, prediction: ModelPrediction, review: dict[str, Any])
         ml_probability=max(prediction.buy_probability, prediction.sell_probability),
         session=session_name(row),
     )
-

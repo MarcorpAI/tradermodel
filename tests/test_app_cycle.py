@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from xauusd_signal.app import SignalApp
+from xauusd_signal.app import enrich_model_features
 from xauusd_signal.config import Settings
 from xauusd_signal.domain import Candle, ModelPrediction
 from xauusd_signal.llm_layer import GroqSignalReviewer
@@ -94,3 +95,100 @@ def test_signal_cycle_sends_and_logs_with_mocks(tmp_path, monkeypatch):
 
     assert len(notifier.sent) == 1
     assert storage.last_sent_signal()["direction"] == "BUY"
+
+
+def test_signal_cycle_research_only_blocks_discord_and_logs_signal(tmp_path, monkeypatch):
+    raw = {
+        "runtime": {"mode": "research_only"},
+        "market_data": {
+            "instrument": "frxXAUUSD",
+            "dxy_proxy_instrument": "frxEURUSD",
+            "primary_granularity": "M15",
+            "candles_lookback": 240,
+            "stale_after_minutes": 20,
+        },
+        "sentiment": {"lookback_hours": 6, "feeds": []},
+        "risk": {
+            "min_confidence": 65,
+            "min_rr_ratio": 1.5,
+            "atr_sl_multiplier": 1.5,
+            "atr_tp_multiplier": 2.25,
+            "news_blackout_hours_before": 2,
+            "news_blackout_minutes_after": 30,
+            "session_cooldown_minutes": 30,
+            "daily_drawdown_limit_r": 3,
+            "suppress_asian_session": False,
+            "asian_h4_strength_min": 0.8,
+        },
+    }
+    settings = Settings(raw=raw, root=tmp_path)
+    storage = Storage(tmp_path / "test.db")
+    storage.initialize()
+    notifier = Notifier()
+    reviewer = GroqSignalReviewer({"model": "test"})
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    app = SignalApp(
+        settings=settings,
+        storage=storage,
+        market_data=Oanda(),
+        model=Model(),
+        reviewer=reviewer,
+        risk_filter=RiskFilter(raw["risk"], storage, Calendar()),
+        notifier=notifier,
+    )
+
+    app.run_signal_cycle()
+
+    assert notifier.sent == []
+    assert storage.last_sent_signal() is None
+    with storage.connect() as conn:
+        signal = conn.execute("SELECT * FROM signals ORDER BY id DESC LIMIT 1").fetchone()
+    assert signal["reject_reason"] == "runtime mode research_only blocks Discord sends"
+
+
+def test_enrich_model_features_adds_macro_columns(tmp_path):
+    import numpy as np
+    import pandas as pd
+
+    timestamps = pd.date_range("2024-01-01", periods=100, freq="15min", tz="UTC")
+    frame = pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "close": np.linspace(100, 110, 100),
+            "ema_20": np.linspace(99, 109, 100),
+            "ema_50": np.linspace(98, 108, 100),
+            "ema_200": np.linspace(97, 107, 100),
+            "atr_14": np.ones(100),
+            "dxy_above_ema_20": np.ones(100),
+        }
+    )
+    dxy_path = tmp_path / "dxy.csv"
+    us10y_path = tmp_path / "us10y.csv"
+    pd.DataFrame(
+        {
+            "timestamp": timestamps,
+            "instrument": "UUP",
+            "granularity": "15min",
+            "open": np.linspace(100, 101, 100),
+            "high": np.linspace(100.5, 101.5, 100),
+            "low": np.linspace(99.5, 100.5, 100),
+            "close": np.linspace(100, 101, 100),
+            "volume": 0,
+        }
+    ).to_csv(dxy_path, index=False)
+    pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2023-12-01", periods=40, freq="1D", tz="UTC"),
+            "instrument": "DGS10",
+            "granularity": "1day",
+            "close": np.linspace(4.0, 4.5, 40),
+        }
+    ).to_csv(us10y_path, index=False)
+    settings = Settings(
+        raw={"macro_data": {"dxy_path": dxy_path.name, "us10y_path": us10y_path.name}},
+        root=tmp_path,
+    )
+
+    enriched = enrich_model_features(frame, settings)
+
+    assert {"real_dxy_return_20", "us10y_change_10d", "sell_regime_block"}.issubset(enriched.columns)

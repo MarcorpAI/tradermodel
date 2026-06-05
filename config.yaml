@@ -7,6 +7,9 @@ market_data:
   candles_lookback: 240
   stale_after_minutes: 20
 
+runtime:
+  mode: research_only
+
 deriv:
   app_id: 1089
   websocket_url: wss://ws.derivws.com/websockets/v3
@@ -31,8 +34,12 @@ database:
   path: data/xauusd.db
 
 model:
-  path: models/xgb_xauusd_v1.pkl
+  path: models/sell_meta_macro_xgb.pkl
   retrain_interval_weeks: 8
+
+macro_data:
+  dxy_path: data/training/dxy_m15.csv
+  us10y_path: data/training/us10y_daily.csv
 
 llm:
   provider: groq
@@ -41,7 +48,7 @@ llm:
   timeout_seconds: 30
 
 risk:
-  min_confidence: 65
+  min_confidence: 55
   min_rr_ratio: 1.5
   atr_sl_multiplier: 1.5
   atr_tp_multiplier: 2.25
@@ -60,13 +67,38 @@ sentiment:
   negative_words: [drop, pressure, selloff, falls, bearish, slips, weakens]
 
 calendar:
-  provider: tradays
+  provider: fxmacrodata
   manual_events_csv: data/news_blackouts.csv
-  high_impact_keywords: [NFP, FOMC, CPI, PPI, GDP, Fed Chair, Rate Decision, Nonfarm Payrolls]
+  cache_csv: data/calendar_cache.csv
+  weeks: 2
+  lookahead_days: 7
+  timeout_seconds: 15
+  high_impact_keywords: [NFP, FOMC, CPI, PPI, PCE, GDP, Retail Sales, Unemployment Rate, Fed Chair, Rate Decision, Nonfarm Payrolls, Non-Farm Payrolls]
 
 discord:
-  min_confidence_to_notify: 65
+  min_confidence_to_notify: 55
 
 logging:
   level: INFO
   file: logs/system.log
+
+research:
+  embargo_candles: 16
+  calibration_fraction: 0.15
+  max_calibration_fraction: 0.30
+  min_calibration_trades: 40
+  reliability_bins: 5
+  min_reliability_bin_count: 15
+  min_feature_rank_spearman: 0.50
+
+execution:
+  entry_delay_candles: 1
+  max_spread_multiplier: 1.5
+  news_blackout_candles_before: 2
+  news_blackout_candles_after: 2
+  news_events_csv: data/research/usd_high_impact_events.csv
+  spread_by_session:
+    Asian: 0.60
+    London: 0.35
+    New York: 0.35
+    London/NY Overlap: 0.30

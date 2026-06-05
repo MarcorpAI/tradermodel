@@ -11,11 +11,23 @@ from .feature_engine import build_feature_frame, feature_matrix, latest_features
 from .llm_layer import GroqSignalReviewer, signal_from_review
 from .logging_config import configure_logging
 from .model_inference import ModelInference
+from .macro_features import add_real_macro_features, load_macro_ohlc, load_us10y_csv
+from .research.candidates import add_regime_features
 from .risk_filter import RiskFilter, build_risk_plan
 from .sentiment import fetch_sentiment
 from .storage import Storage
 
 logger = logging.getLogger(__name__)
+
+
+def enrich_model_features(frame, settings: Settings):
+    macro_config = settings.raw.get("macro_data", {})
+    if not macro_config:
+        return frame
+    dxy_path = settings.root / macro_config["dxy_path"]
+    us10y_path = settings.root / macro_config["us10y_path"]
+    enriched = add_regime_features(frame)
+    return add_real_macro_features(enriched, load_macro_ohlc(dxy_path), load_us10y_csv(us10y_path))
 
 
 class SignalApp:
@@ -59,15 +71,22 @@ class SignalApp:
                 logger.warning("sentiment fetch failed: %s", exc)
                 sentiment_score = 0.0
             features = build_feature_frame(m15, h1, h4, dxy, sentiment_score)
-            row = latest_features(features)
-            prediction = self.model.predict(feature_matrix(row))
+            features = enrich_model_features(features, self.settings)
+            model_columns = self.model.feature_columns() if hasattr(self.model, "feature_columns") else None
+            row = latest_features(features, model_columns)
+            prediction = self.model.predict(feature_matrix(row, model_columns))
             risk_plan = build_risk_plan(row, prediction.direction, config["risk"])
             review = self.reviewer.review(row, prediction, risk_plan)
             signal = signal_from_review(row, prediction, review)
             decision = self.risk_filter.evaluate(signal, row, now)
-            if decision.accepted:
+            research_only = str(config.get("runtime", {}).get("mode", "")).lower() == "research_only"
+            if decision.accepted and not research_only:
                 self.notifier.send(signal)
-            self.storage.insert_signal(signal, decision.accepted, decision.reject_reason)
+            reject_reason = decision.reject_reason
+            if decision.accepted and research_only:
+                reject_reason = "runtime mode research_only blocks Discord sends"
+                self.storage.log_event("INFO", "research_only_signal", reject_reason)
+            self.storage.insert_signal(signal, decision.accepted and not research_only, reject_reason)
         except Exception as exc:
             logger.exception("signal cycle failed")
             self.storage.log_event("ERROR", "signal_cycle_failed", str(exc))
