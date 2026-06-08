@@ -223,42 +223,29 @@ def objective(train: pd.DataFrame, validation: pd.DataFrame, feat_cols: list[str
     sample_weight = class_balanced_sample_weight(y_train)
 
     def _objective(trial: optuna.Trial) -> float:
+        params = dict(
+            n_estimators=trial.suggest_categorical("n_estimators", [100, 300, 500]),
+            max_depth=trial.suggest_int("max_depth", 3, 6),
+            learning_rate=trial.suggest_categorical("learning_rate", [0.01, 0.05, 0.1]),
+            subsample=trial.suggest_categorical("subsample", [0.7, 0.8, 0.9]),
+            colsample_bytree=trial.suggest_categorical("colsample_bytree", [0.7, 0.8, 0.9]),
+            min_child_weight=trial.suggest_categorical("min_child_weight", [1, 3, 5]),
+            reg_alpha=trial.suggest_categorical("reg_alpha", [0, 0.1, 0.5]),
+            reg_lambda=trial.suggest_categorical("reg_lambda", [1, 1.5, 2.0]),
+            gamma=trial.suggest_categorical("gamma", [0, 0.1, 0.3]),
+        )
         if binary:
-            model = XGBClassifier(
-                n_estimators=trial.suggest_categorical("n_estimators", [100, 300, 500]),
-                max_depth=trial.suggest_int("max_depth", 2, 4),
-                learning_rate=trial.suggest_categorical("learning_rate", [0.01, 0.05, 0.1]),
-                subsample=trial.suggest_categorical("subsample", [0.7, 0.8, 0.9]),
-                colsample_bytree=trial.suggest_categorical("colsample_bytree", [0.7, 0.8, 0.9]),
-                min_child_weight=trial.suggest_categorical("min_child_weight", [1, 3, 5]),
-                reg_alpha=trial.suggest_categorical("reg_alpha", [0, 0.1, 0.5]),
-                reg_lambda=trial.suggest_categorical("reg_lambda", [1, 1.5, 2.0]),
-                scale_pos_weight=max(int((y_train == 0).sum()), 1) / max(int((y_train == 1).sum()), 1),
-                eval_metric="logloss",
-                random_state=42,
-            )
+            params["eval_metric"] = "logloss"
         else:
-            model = XGBClassifier(
-                n_estimators=trial.suggest_categorical("n_estimators", [100, 300, 500]),
-                max_depth=trial.suggest_int("max_depth", 3, 6),
-                learning_rate=trial.suggest_categorical("learning_rate", [0.01, 0.05, 0.1]),
-                subsample=trial.suggest_categorical("subsample", [0.7, 0.8, 0.9]),
-                colsample_bytree=trial.suggest_categorical("colsample_bytree", [0.7, 0.8, 0.9]),
-                min_child_weight=trial.suggest_categorical("min_child_weight", [1, 3, 5]),
-                reg_alpha=trial.suggest_categorical("reg_alpha", [0, 0.1, 0.5]),
-                reg_lambda=trial.suggest_categorical("reg_lambda", [1, 1.5, 2.0]),
-                objective="multi:softprob",
-                num_class=3,
-                eval_metric="mlogloss",
-                random_state=42,
-            )
+            params.update(objective="multi:softprob", num_class=3, eval_metric="mlogloss")
+        model = XGBClassifier(**params, random_state=42)
         model.fit(x_train, y_train, sample_weight=sample_weight)
         if binary:
             probabilities = model.predict_proba(x_val)[:, 1]
-            mask = probabilities >= 0.55
-            if not mask.any():
+            try:
+                return float(roc_auc_score(y_val, probabilities))
+            except ValueError:
                 return 0.0
-            return float(y_val.to_numpy()[mask].mean())
         predictions = model.predict(x_val)
         return f1_score(y_val, predictions, average="macro", zero_division=0)
 
@@ -342,7 +329,7 @@ def print_multi_confidence_report(probabilities: np.ndarray, y_test: pd.Series) 
 def print_binary_confidence_report(probabilities: np.ndarray, y_test: pd.Series) -> None:
     y = y_test.to_numpy()
     print("confidence_threshold_report")
-    for threshold in [0.55, 0.60, 0.65, 0.70, 0.75]:
+    for threshold in [0.50, 0.55, 0.60, 0.65, 0.70, 0.75]:
         mask = probabilities >= threshold
         if not mask.any():
             print(f"threshold={threshold:.2f} coverage=0 precision=NA trades=0")
