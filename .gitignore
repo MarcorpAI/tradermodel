@@ -11,4 +11,8 @@ __pycache__/
 logs/*.log
 data/*.csv
 data/**/*.csv
+data/research/
 models/*.joblib
+reports/
+xauusd-2009-2026/
+AGENTS.md
