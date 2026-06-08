@@ -7,7 +7,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -37,7 +36,7 @@ def is_expected_closure(previous: datetime, current: datetime, expected_minutes:
 
 
 def coverage_report_for_frame(frame: pd.DataFrame, expected_minutes: int, market: str) -> dict[str, Any]:
-    timestamps = list(np.array(frame["timestamp"].dt.to_pydatetime()))
+    timestamps = frame["timestamp"].to_list()
     if not timestamps:
         return {"rows": 0}
     gaps = 0
@@ -65,7 +64,7 @@ def coverage_report_for_frame(frame: pd.DataFrame, expected_minutes: int, market
 def classify_unexpected_gaps(frame: pd.DataFrame, market: str) -> Counter[int]:
     gaps: Counter[int] = Counter()
     expected_minutes = expected_minutes_from_granularity(str(frame["granularity"].iloc[0]))
-    timestamps = list(np.array(frame["timestamp"].dt.to_pydatetime()))
+    timestamps = frame["timestamp"].to_list()
     for previous, current in zip(timestamps, timestamps[1:], strict=False):
         gap = int((current - previous).total_seconds() / 60)
         if gap <= expected_minutes:
