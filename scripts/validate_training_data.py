@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent))
@@ -36,7 +37,7 @@ def is_expected_closure(previous: datetime, current: datetime, expected_minutes:
 
 
 def coverage_report_for_frame(frame: pd.DataFrame, expected_minutes: int, market: str) -> dict[str, Any]:
-    timestamps = list(frame["timestamp"].dt.to_pydatetime())
+    timestamps = list(np.array(frame["timestamp"].dt.to_pydatetime()))
     if not timestamps:
         return {"rows": 0}
     gaps = 0
@@ -64,7 +65,7 @@ def coverage_report_for_frame(frame: pd.DataFrame, expected_minutes: int, market
 def classify_unexpected_gaps(frame: pd.DataFrame, market: str) -> Counter[int]:
     gaps: Counter[int] = Counter()
     expected_minutes = expected_minutes_from_granularity(str(frame["granularity"].iloc[0]))
-    timestamps = list(frame["timestamp"].dt.to_pydatetime())
+    timestamps = list(np.array(frame["timestamp"].dt.to_pydatetime()))
     for previous, current in zip(timestamps, timestamps[1:], strict=False):
         gap = int((current - previous).total_seconds() / 60)
         if gap <= expected_minutes:
@@ -87,12 +88,19 @@ def main() -> None:
     report = coverage_report_for_frame(frame, expected_minutes, market)
     unexpected_gaps = classify_unexpected_gaps(frame, market)
     duplicates = int(frame["timestamp"].duplicated().sum())
-    null_ohlc = int(frame[["open", "high", "low", "close"]].isna().sum().sum())
-    bad_ranges = int(((frame["high"] < frame[["open", "close", "low"]].max(axis=1)) | (frame["low"] > frame[["open", "close", "high"]].min(axis=1))).sum())
+    has_ohlc = all(col in frame.columns for col in ["open", "high", "low", "close"])
+    if has_ohlc:
+        null_ohlc = int(frame[["open", "high", "low", "close"]].isna().sum().sum())
+        bad_ranges = int(((frame["high"] < frame[["open", "close", "low"]].max(axis=1)) | (frame["low"] > frame[["open", "close", "high"]].min(axis=1))).sum())
+    else:
+        null_ohlc = 0
+        bad_ranges = 0
 
     print(f"file={args.csv} market={market} expected_minutes={expected_minutes}")
     print("coverage=" + " ".join(f"{key}={value}" for key, value in report.items()))
     print(f"integrity=duplicates={duplicates} null_ohlc={null_ohlc} bad_ranges={bad_ranges}")
+    if not has_ohlc:
+        print("info=non_ohlc_schema_skipped_integrity_checks")
     print("unexpected_gap_minutes=" + ", ".join(f"{minutes}:{count}" for minutes, count in unexpected_gaps.most_common(20)))
     if duplicates or null_ohlc or bad_ranges:
         raise SystemExit("Training data failed integrity validation")
