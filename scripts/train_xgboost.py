@@ -84,7 +84,7 @@ def make_training_frame(
         us10y_frame=us10y_frame, real_dxy_frame=real_dxy_frame,
     )
     if target_mode == "binary":
-        future_close = df["close"].shift(-4)
+        future_close = df["close"].shift(-lookahead)
         threshold = 0.5 * df["atr_14"]
         df["target"] = pd.NA
         df.loc[future_close > df["close"] + threshold, "target"] = 1
@@ -375,6 +375,12 @@ def train_from_bundle(
     real_dxy_path: Path | None = None,
     binary: bool = False,
 ) -> None:
+    if binary and target_mode != "binary":
+        print(
+            f"WARNING: --binary requires binary targets; auto-switching target_mode "
+            f"from '{target_mode}' to 'binary' (use --target-mode binary to suppress this warning)"
+        )
+        target_mode = "binary"
     prepared = make_training_frame(
         m15, h1, h4, dxy,
         target_mode=target_mode,
