@@ -10,6 +10,11 @@ market_data:
 runtime:
   mode: research_only
 
+paper_signal_gate:
+  enabled: true
+  variant: usd80_or_yields_falling
+  min_paper_trades_before_live: 50
+
 deriv:
   app_id: 1089
   websocket_url: wss://ws.derivws.com/websockets/v3
@@ -34,7 +39,7 @@ database:
   path: data/xauusd.db
 
 model:
-  path: models/sell_meta_macro_xgb.pkl
+  path: models/overlap_macro_trend_xgb.pkl
   retrain_interval_weeks: 8
 
 macro_data:
@@ -48,7 +53,7 @@ llm:
   timeout_seconds: 30
 
 risk:
-  min_confidence: 55
+  min_confidence: 50
   min_rr_ratio: 1.5
   atr_sl_multiplier: 1.5
   atr_tp_multiplier: 2.25
@@ -76,7 +81,7 @@ calendar:
   high_impact_keywords: [NFP, FOMC, CPI, PPI, PCE, GDP, Retail Sales, Unemployment Rate, Fed Chair, Rate Decision, Nonfarm Payrolls, Non-Farm Payrolls]
 
 discord:
-  min_confidence_to_notify: 55
+  min_confidence_to_notify: 50
 
 logging:
   level: INFO

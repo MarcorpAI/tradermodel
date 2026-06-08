@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from xauusd_signal.app import SignalApp
-from xauusd_signal.app import enrich_model_features
+from xauusd_signal.app import enrich_model_features, paper_signal_gate_passes, prepare_inference_row
 from xauusd_signal.config import Settings
 from xauusd_signal.domain import Candle, ModelPrediction
 from xauusd_signal.llm_layer import GroqSignalReviewer
@@ -192,3 +192,145 @@ def test_enrich_model_features_adds_macro_columns(tmp_path):
     enriched = enrich_model_features(frame, settings)
 
     assert {"real_dxy_return_20", "us10y_change_10d", "sell_regime_block"}.issubset(enriched.columns)
+
+
+def test_prepare_inference_row_marks_overlap_candidate_active():
+    import numpy as np
+    import pandas as pd
+
+    rows = 80
+    features = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01 13:00", periods=rows, freq="15min", tz="UTC"),
+            "open": np.linspace(100, 110, rows),
+            "high": np.linspace(101, 111, rows),
+            "low": np.linspace(99, 109, rows),
+            "close": np.linspace(100, 110, rows),
+            "ema_20": np.linspace(99, 109, rows),
+            "ema_50": np.linspace(98, 108, rows),
+            "ema_200": np.linspace(97, 107, rows),
+            "atr_14": np.ones(rows),
+            "bb_percent_b": np.linspace(0.5, 0.95, rows),
+            "rsi_14": np.linspace(50, 75, rows),
+            "h1_trend": np.ones(rows),
+            "h4_trend": np.ones(rows),
+            "h4_trend_strength": np.ones(rows),
+            "session_london": np.ones(rows),
+            "session_newyork": np.ones(rows),
+            "session_overlap": np.ones(rows),
+            "session_asian": np.zeros(rows),
+            "day_of_week": np.zeros(rows),
+            "dxy_above_ema_20": np.zeros(rows),
+            "source_index": np.arange(rows),
+        }
+    )
+
+    row = prepare_inference_row(features, ["side_buy", "source_family_breakout"], "overlap_macro_trend_xgboost")
+
+    assert row["candidate_active"] == 1
+    assert row["side"] == "BUY"
+    assert row["side_buy"] == 1
+    assert row["source_candidate_family"] in {"trend_continuation", "breakout", "ema_pullback"}
+
+
+def test_prepare_inference_row_marks_no_overlap_candidate_inactive():
+    import numpy as np
+    import pandas as pd
+
+    rows = 80
+    features = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01", periods=rows, freq="15min", tz="UTC"),
+            "close": np.linspace(100, 110, rows),
+            "ema_20": np.linspace(99, 109, rows),
+            "ema_50": np.linspace(98, 108, rows),
+            "ema_200": np.linspace(97, 107, rows),
+            "atr_14": np.ones(rows),
+            "bb_percent_b": np.linspace(0.5, 0.95, rows),
+            "rsi_14": np.linspace(50, 75, rows),
+            "h1_trend": np.ones(rows),
+            "h4_trend": np.ones(rows),
+            "h4_trend_strength": np.ones(rows),
+            "session_london": np.zeros(rows),
+            "session_newyork": np.zeros(rows),
+            "session_overlap": np.zeros(rows),
+            "session_asian": np.ones(rows),
+            "day_of_week": np.zeros(rows),
+            "dxy_above_ema_20": np.zeros(rows),
+        }
+    )
+
+    row = prepare_inference_row(features, ["side_buy", "source_family_breakout"], "overlap_macro_trend_xgboost")
+
+    assert row["candidate_active"] == 0
+    assert row["side"] == "HOLD"
+    assert row["side_buy"] == 0
+    assert row["paper_gate_active"] == 0
+    assert row["paper_gate_reason"] == "disabled"
+
+
+def test_paper_signal_gate_passes_validated_buy_variant():
+    import pandas as pd
+
+    row = pd.Series(
+        {
+            "side": "BUY",
+            "source_candidate_family": "trend_continuation",
+            "real_dxy_return_20": 0.0,
+            "real_dxy_return_80": 0.0,
+            "us10y_change_10d": -0.10,
+            "us10y_change_20d": -0.20,
+        }
+    )
+
+    passed, reason = paper_signal_gate_passes(row, {"enabled": True, "variant": "usd80_or_yields_falling"})
+
+    assert passed is True
+    assert reason == "usd80_or_yields_falling"
+
+
+def test_prepare_inference_row_blocks_overlap_candidate_when_paper_gate_fails():
+    import numpy as np
+    import pandas as pd
+
+    rows = 80
+    features = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2026-01-01 13:00", periods=rows, freq="15min", tz="UTC"),
+            "open": np.linspace(100, 110, rows),
+            "high": np.linspace(101, 111, rows),
+            "low": np.linspace(99, 109, rows),
+            "close": np.linspace(100, 110, rows),
+            "ema_20": np.linspace(99, 109, rows),
+            "ema_50": np.linspace(98, 108, rows),
+            "ema_200": np.linspace(97, 107, rows),
+            "atr_14": np.ones(rows),
+            "bb_percent_b": np.linspace(0.5, 0.95, rows),
+            "rsi_14": np.linspace(50, 75, rows),
+            "h1_trend": np.ones(rows),
+            "h4_trend": np.ones(rows),
+            "h4_trend_strength": np.ones(rows),
+            "session_london": np.ones(rows),
+            "session_newyork": np.ones(rows),
+            "session_overlap": np.ones(rows),
+            "session_asian": np.zeros(rows),
+            "day_of_week": np.zeros(rows),
+            "dxy_above_ema_20": np.zeros(rows),
+            "source_index": np.arange(rows),
+            "real_dxy_return_20": np.zeros(rows),
+            "real_dxy_return_80": np.zeros(rows),
+            "us10y_change_10d": np.zeros(rows),
+            "us10y_change_20d": np.zeros(rows),
+        }
+    )
+
+    row = prepare_inference_row(
+        features,
+        ["side_buy", "source_family_trend_continuation"],
+        "overlap_macro_trend_xgboost",
+        {"enabled": True, "variant": "usd80_or_yields_falling"},
+    )
+
+    assert row["candidate_active"] == 0
+    assert row["paper_gate_active"] == 1
+    assert row["paper_gate_reason"] == "blocked"

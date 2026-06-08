@@ -106,3 +106,50 @@ def test_side_meta_artifact_regime_block_forces_hold():
 
     assert prediction.direction == "HOLD"
     assert prediction.confidence == 0
+
+
+def test_overlap_macro_trend_artifact_returns_buy_for_active_enabled_candidate():
+    model = BinaryModel(0.62)
+    artifact = {
+        "artifact_type": "overlap_macro_trend_xgboost",
+        "enabled_sides": ["BUY"],
+        "threshold": 0.5,
+        "feature_columns": ["feature_a", "side_buy"],
+        "model": model,
+    }
+
+    prediction = Inference(artifact).predict(pd.DataFrame([{"feature_a": 1.0, "side_buy": 1, "candidate_active": 1}]))
+
+    assert prediction.direction == "BUY"
+    assert prediction.confidence == 62
+    assert model.seen_columns == ["feature_a", "side_buy"]
+
+
+def test_overlap_macro_trend_artifact_returns_hold_for_inactive_candidate():
+    artifact = {
+        "artifact_type": "overlap_macro_trend_xgboost",
+        "enabled_sides": ["BUY"],
+        "threshold": 0.5,
+        "feature_columns": ["feature_a", "side_buy"],
+        "model": BinaryModel(0.90),
+    }
+
+    prediction = Inference(artifact).predict(pd.DataFrame([{"feature_a": 1.0, "side_buy": 1, "candidate_active": 0}]))
+
+    assert prediction.direction == "HOLD"
+    assert prediction.confidence == 0
+
+
+def test_overlap_macro_trend_artifact_returns_hold_for_disabled_sell_candidate():
+    artifact = {
+        "artifact_type": "overlap_macro_trend_xgboost",
+        "enabled_sides": ["BUY"],
+        "threshold": 0.5,
+        "feature_columns": ["feature_a", "side_buy"],
+        "model": BinaryModel(0.90),
+    }
+
+    prediction = Inference(artifact).predict(pd.DataFrame([{"feature_a": 1.0, "side_buy": 0, "candidate_active": 1}]))
+
+    assert prediction.direction == "HOLD"
+    assert prediction.confidence == 0

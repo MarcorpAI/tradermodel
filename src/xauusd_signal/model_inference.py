@@ -22,18 +22,31 @@ class ModelInference:
 
     def feature_columns(self) -> list[str] | None:
         artifact = self.load()
-        if isinstance(artifact, dict) and artifact.get("artifact_type") == "side_meta_xgboost":
+        if isinstance(artifact, dict) and artifact.get("artifact_type") in {"side_meta_xgboost", "overlap_macro_trend_xgboost"}:
             columns = artifact.get("feature_columns")
             if not columns:
-                raise ValueError("Side-meta artifact is missing feature_columns")
+                raise ValueError("Model artifact is missing feature_columns")
             return list(columns)
+        return None
+
+    def artifact_type(self) -> str | None:
+        artifact = self.load()
+        if isinstance(artifact, dict):
+            return artifact.get("artifact_type")
         return None
 
     def predict(self, features: pd.DataFrame) -> ModelPrediction:
         artifact = self.load()
-        if isinstance(artifact, dict) and artifact.get("artifact_type") == "side_meta_xgboost":
-            return self._predict_side_meta_artifact(artifact, features)
-        model = artifact
+        if isinstance(artifact, dict):
+            atype = artifact.get("artifact_type")
+            if atype == "side_meta_xgboost":
+                return self._predict_side_meta_artifact(artifact, features)
+            if atype == "overlap_macro_trend_xgboost":
+                return self._predict_overlap_macro_trend_artifact(artifact, features)
+            # Generic dict artifact — unwrap the model
+            model = artifact["model"]
+        else:
+            model = artifact
         probabilities = model.predict_proba(features)[0]
         classes = list(getattr(model, "classes_", [0, 1]))
         if 2 in classes:
@@ -78,3 +91,23 @@ class ModelInference:
         if probability >= threshold:
             return ModelPrediction(direction="SELL", buy_probability=0.0, sell_probability=probability)
         return ModelPrediction(direction="HOLD", buy_probability=0.0, sell_probability=probability)
+
+    def _predict_overlap_macro_trend_artifact(self, artifact: dict, features: pd.DataFrame) -> ModelPrediction:
+        feature_columns = artifact.get("feature_columns")
+        if not feature_columns:
+            raise ValueError("Overlap macro trend artifact is missing feature_columns")
+        missing = [column for column in feature_columns if column not in features.columns]
+        if missing:
+            raise ValueError(f"Missing model features: {missing}")
+        enabled_sides = set(artifact.get("enabled_sides", []))
+        if "BUY" not in enabled_sides:
+            return ModelPrediction(direction="HOLD", buy_probability=0.0, sell_probability=0.0)
+        if "side_buy" in features.columns and not bool(features["side_buy"].iloc[0]):
+            return ModelPrediction(direction="HOLD", buy_probability=0.0, sell_probability=0.0)
+        if "candidate_active" in features.columns and not bool(features["candidate_active"].iloc[0]):
+            return ModelPrediction(direction="HOLD", buy_probability=0.0, sell_probability=0.0)
+        probability = float(artifact["model"].predict_proba(features[feature_columns])[0][1])
+        threshold = float(artifact["threshold"])
+        if probability >= threshold:
+            return ModelPrediction(direction="BUY", buy_probability=probability, sell_probability=0.0)
+        return ModelPrediction(direction="HOLD", buy_probability=probability, sell_probability=0.0)

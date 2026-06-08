@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
+import pandas as pd
+
 from .calendar import TradaysCalendar
 from .config import Settings, load_settings
 from .data_ingest import build_market_data_client, is_candle_fresh, latest_complete_candle
@@ -12,6 +14,8 @@ from .llm_layer import GroqSignalReviewer, signal_from_review
 from .logging_config import configure_logging
 from .model_inference import ModelInference
 from .macro_features import add_real_macro_features, load_macro_ohlc, load_us10y_csv
+from .research.candidate_families import generate_overlap_macro_trend_candidates
+from .research.candidates import CandidateConfig
 from .research.candidates import add_regime_features
 from .risk_filter import RiskFilter, build_risk_plan
 from .sentiment import fetch_sentiment
@@ -28,6 +32,97 @@ def enrich_model_features(frame, settings: Settings):
     us10y_path = settings.root / macro_config["us10y_path"]
     enriched = add_regime_features(frame)
     return add_real_macro_features(enriched, load_macro_ohlc(dxy_path), load_us10y_csv(us10y_path))
+
+
+def bucket_signed_change(value: float, small: float, large: float) -> str:
+    if value is None:
+        return "unknown"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return "unknown"
+    if numeric <= -large:
+        return "falling_fast"
+    if numeric <= -small:
+        return "falling"
+    if numeric >= large:
+        return "rising_fast"
+    if numeric >= small:
+        return "rising"
+    return "flat"
+
+
+def paper_signal_gate_passes(row, gate_config: dict | None) -> tuple[bool, str]:
+    if not gate_config or not bool(gate_config.get("enabled", False)):
+        return True, "disabled"
+    if str(row.get("side", "")) != "BUY":
+        return False, "side_not_buy"
+    if str(row.get("source_candidate_family", "")) != "trend_continuation":
+        return False, "not_trend_continuation"
+
+    usd20_bucket = bucket_signed_change(row.get("real_dxy_return_20"), 0.005, 0.015)
+    usd80_bucket = bucket_signed_change(row.get("real_dxy_return_80"), 0.015, 0.040)
+    us10y_10d_bucket = bucket_signed_change(row.get("us10y_change_10d"), 0.05, 0.20)
+    us10y_20d_bucket = bucket_signed_change(row.get("us10y_change_20d"), 0.10, 0.30)
+    variant = str(gate_config.get("variant", "usd80_or_yields_falling"))
+
+    usd80_falling_fast = usd80_bucket == "falling_fast"
+    usd20_and_usd80_falling_fast = usd20_bucket == "falling_fast" and usd80_falling_fast
+    yields_falling = us10y_10d_bucket == "falling" and us10y_20d_bucket == "falling"
+    variants = {
+        "usd80_falling_fast": usd80_falling_fast,
+        "usd20_and_usd80_falling_fast": usd20_and_usd80_falling_fast,
+        "yields_10d_20d_falling": yields_falling,
+        "usd80_or_yields_falling": usd80_falling_fast or yields_falling,
+    }
+    return bool(variants.get(variant, False)), variant
+
+
+def prepare_inference_row(features, model_columns: list[str] | None, artifact_type: str | None = None, paper_gate_config: dict | None = None):
+    if artifact_type != "overlap_macro_trend_xgboost":
+        return latest_features(features, model_columns)
+    candidates = generate_overlap_macro_trend_candidates(features, CandidateConfig())
+    if not candidates.empty:
+        latest_timestamp = features["timestamp"].iloc[-1] if "timestamp" in features.columns else None
+        if latest_timestamp is not None and "timestamp" in candidates.columns:
+            candidates = candidates.loc[pd.to_datetime(candidates["timestamp"], utc=True).eq(pd.Timestamp(latest_timestamp))]
+    if candidates.empty:
+        row = features.iloc[-1].copy()
+        row["candidate_active"] = 0
+        row["side"] = "HOLD"
+        row["source_candidate_family"] = ""
+        row["paper_gate_active"] = int(bool(paper_gate_config and paper_gate_config.get("enabled", False)))
+        row["paper_gate_reason"] = "no_candidate" if row["paper_gate_active"] else "disabled"
+    else:
+        gated = []
+        for _, candidate in candidates.iterrows():
+            passed, reason = paper_signal_gate_passes(candidate, paper_gate_config)
+            if passed:
+                selected = candidate.copy()
+                selected["paper_gate_reason"] = reason
+                gated.append(selected)
+        if gated:
+            row = gated[-1]
+            row["candidate_active"] = 1
+            row["paper_gate_active"] = int(bool(paper_gate_config and paper_gate_config.get("enabled", False)))
+        else:
+            row = features.iloc[-1].copy()
+            row["candidate_active"] = 0
+            row["side"] = "HOLD"
+            row["source_candidate_family"] = ""
+            row["paper_gate_active"] = int(bool(paper_gate_config and paper_gate_config.get("enabled", False)))
+            row["paper_gate_reason"] = "blocked"
+    row["side_buy"] = int(row.get("side") == "BUY")
+    row["side_sell"] = int(row.get("side") == "SELL")
+    source_family = str(row.get("source_candidate_family", ""))
+    row["source_family_breakout"] = int(source_family == "breakout")
+    row["source_family_ema_pullback"] = int(source_family == "ema_pullback")
+    row["source_family_trend_continuation"] = int(source_family == "trend_continuation")
+    if model_columns:
+        for column in model_columns:
+            if column not in row:
+                row[column] = 0
+    return row
 
 
 class SignalApp:
@@ -73,7 +168,8 @@ class SignalApp:
             features = build_feature_frame(m15, h1, h4, dxy, sentiment_score)
             features = enrich_model_features(features, self.settings)
             model_columns = self.model.feature_columns() if hasattr(self.model, "feature_columns") else None
-            row = latest_features(features, model_columns)
+            artifact_type = self.model.artifact_type() if hasattr(self.model, "artifact_type") else None
+            row = prepare_inference_row(features, model_columns, artifact_type, config.get("paper_signal_gate"))
             prediction = self.model.predict(feature_matrix(row, model_columns))
             risk_plan = build_risk_plan(row, prediction.direction, config["risk"])
             review = self.reviewer.review(row, prediction, risk_plan)

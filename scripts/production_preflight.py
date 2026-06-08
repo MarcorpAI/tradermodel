@@ -62,12 +62,46 @@ def check_model(path: Path) -> bool:
     artifact = joblib.load(path)
     ok = True
     ok &= check(isinstance(artifact, dict), "model_artifact_dict")
-    ok &= check(artifact.get("artifact_type") == "side_meta_xgboost", "model_artifact_type", str(artifact.get("artifact_type")))
-    ok &= check(artifact.get("side") == "SELL", "model_side", str(artifact.get("side")))
-    ok &= check(float(artifact.get("threshold", 0)) == 0.55, "model_threshold", str(artifact.get("threshold")))
+    artifact_type = artifact.get("artifact_type") if isinstance(artifact, dict) else None
+    ok &= check(artifact_type in {"side_meta_xgboost", "overlap_macro_trend_xgboost"}, "model_artifact_type", str(artifact_type))
+    if not ok:
+        return False
+
     feature_columns = artifact.get("feature_columns", [])
-    ok &= check("sell_regime_block" in feature_columns, "model_macro_gate_feature")
-    ok &= check(len(feature_columns) >= 40, "model_feature_count", str(len(feature_columns)))
+    if artifact_type == "side_meta_xgboost":
+        ok &= check(artifact.get("side") == "SELL", "model_side", str(artifact.get("side")))
+        ok &= check(float(artifact.get("threshold", 0)) == 0.55, "model_threshold", str(artifact.get("threshold")))
+        ok &= check("sell_regime_block" in feature_columns, "model_macro_gate_feature")
+        ok &= check(len(feature_columns) >= 40, "model_feature_count", str(len(feature_columns)))
+    elif artifact_type == "overlap_macro_trend_xgboost":
+        enabled_sides = list(artifact.get("enabled_sides", []))
+        ok &= check(enabled_sides == ["BUY"], "model_enabled_sides", str(enabled_sides))
+        ok &= check(float(artifact.get("threshold", 0)) == 0.5, "model_threshold", str(artifact.get("threshold")))
+        required_features = {
+            "side_buy",
+            "side_sell",
+            "source_family_breakout",
+            "source_family_ema_pullback",
+            "source_family_trend_continuation",
+        }
+        missing = required_features - set(feature_columns)
+        ok &= check(not missing, "model_focused_features", f"missing={sorted(missing)}" if missing else "")
+        ok &= check(len(feature_columns) >= 45, "model_feature_count", str(len(feature_columns)))
+    return bool(ok)
+
+
+def check_paper_signal_gate(config: dict) -> bool:
+    gate = config.get("paper_signal_gate", {})
+    if not gate:
+        return check(False, "paper_signal_gate_config", "missing")
+    ok = True
+    ok &= check(bool(gate.get("enabled", False)), "paper_signal_gate_enabled")
+    ok &= check(
+        gate.get("variant") == "usd80_or_yields_falling",
+        "paper_signal_gate_variant",
+        str(gate.get("variant")),
+    )
+    ok &= check(int(gate.get("min_paper_trades_before_live", 0)) >= 50, "paper_signal_gate_min_trades", str(gate.get("min_paper_trades_before_live")))
     return bool(ok)
 
 
@@ -76,6 +110,9 @@ def main() -> None:
     settings = load_settings()
     root = settings.root
     ok = True
+    runtime_mode = str(settings.raw.get("runtime", {}).get("mode", "")).lower()
+    ok &= check(runtime_mode == "research_only", "runtime_research_only", runtime_mode)
+    ok &= check_paper_signal_gate(settings.raw)
 
     for name in REQUIRED_ENV:
         ok &= check(bool(os.getenv(name)), f"env_{name}")

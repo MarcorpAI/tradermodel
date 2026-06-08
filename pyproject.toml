@@ -1,7 +1,7 @@
 [project]
 name = "xauusd-signal"
 version = "0.1.0"
-description = "Local XAUUSD AI signal system with OANDA data, XGBoost inference, Groq review, risk filtering, and Discord delivery."
+description = "Local XAUUSD AI signal system with Deriv market data, XGBoost inference, Groq review, risk filtering, and Discord delivery."
 requires-python = ">=3.11"
 dependencies = [
     "apscheduler>=3.10",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from datetime import UTC, datetime
 
-from xauusd_signal.app import enrich_model_features
+from xauusd_signal.app import enrich_model_features, prepare_inference_row
 from xauusd_signal.calendar import TradaysCalendar
 from xauusd_signal.config import load_settings
 from xauusd_signal.data_ingest import build_market_data_client, is_candle_fresh, latest_complete_candle
@@ -62,7 +62,7 @@ def main() -> None:
 
     frame = build_feature_frame(m15, h1, h4, dxy, sentiment_score)
     frame = enrich_model_features(frame, settings)
-    row = latest_features(frame, model_columns)
+    row = prepare_inference_row(frame, model_columns, model.artifact_type(), settings.raw.get("paper_signal_gate"))
     prediction = model.predict(feature_matrix(row, model_columns))
     risk_plan = build_risk_plan(row, prediction.direction, settings.raw["risk"])
     reviewer = GroqSignalReviewer(settings.raw["llm"])
@@ -74,8 +74,16 @@ def main() -> None:
 
     print(f"latest_m15={latest.timestamp.isoformat()} fresh={fresh} session={session_name(row)}")
     print(
+        "candidate="
+        f"active={int(row.get('candidate_active', 1))} side={row.get('side', 'NA')} "
+        f"source_family={row.get('source_candidate_family', 'NA')} "
+        f"paper_gate_active={int(row.get('paper_gate_active', 0))} "
+        f"paper_gate_reason={row.get('paper_gate_reason', 'NA')}"
+    )
+    print(
         "model_prediction="
-        f"direction={prediction.direction} sell_probability={prediction.sell_probability:.4f} "
+        f"direction={prediction.direction} buy_probability={prediction.buy_probability:.4f} "
+        f"sell_probability={prediction.sell_probability:.4f} "
         f"confidence={prediction.confidence} sell_regime_block={int(row.get('sell_regime_block', 0))}"
     )
     print(
